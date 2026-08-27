@@ -162,6 +162,9 @@ chmod +x streamfix-installer.sh
 ./streamfix-installer.sh
 ```
 
+> [!WARNING]
+> **Não execute o instalador inteiro com `sudo` nem como root.** Rode `./streamfix-installer.sh` como seu usuário normal. Quando o Discord/flatpak de sistema precisar de privilégio, o próprio instalador pede `sudo` somente para aquela etapa. Rodar o script inteiro como root muda `$HOME` para `/root` e pode criar o checkout em `/root/Equicord` ou `/root/Vencord`; depois o Discord flatpak, aberto pelo usuário normal, não consegue carregar esse build e pode falhar com `Cannot find module`.
+
 É o mesmo script para os dois sistemas, sem asset separado: ele detecta em qual dos dois está rodando e ajusta a descoberta sozinho.
 
 No Linux, funciona com o Discord instalado por flatpak (do sistema ou do usuário) e com os pacotes nativos. Ele acha o Discord procurando o `app.asar` de verdade, o que cobre tanto os pacotes que embutem o app quanto o formato atual, em que o pacote traz só um bootstrap e o app é baixado na primeira execução para dentro do seu `~/.config`.

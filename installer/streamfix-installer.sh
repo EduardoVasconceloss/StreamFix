@@ -95,6 +95,22 @@ confirm() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# O instalador inteiro precisa rodar como a pessoa dona do checkout. Ele ja eleva sozinho, e
+# somente nas operacoes que realmente exigem privilegio (por exemplo, injetar num flatpak de
+# sistema). Se o script inteiro nasce sob sudo, HOME vira /root e um checkout novo pode acabar
+# em /root/Equicord ou /root/Vencord; depois o Discord flatpak, executado como usuario normal,
+# nao consegue carregar esse caminho e abre com "Cannot find module".
+ensure_not_root() {
+    [ "$(id -u)" -ne 0 ] && return 0
+
+    local usuario="${SUDO_USER:-}"
+    if [ -n "$usuario" ] && [ "$usuario" != "root" ]; then
+        fail "Nao rode o instalador inteiro com sudo. Rode o mesmo comando sem sudo como $usuario. Quando precisar escrever no Discord/flatpak de sistema, o proprio instalador pede sudo."
+    fi
+
+    fail "Nao rode este instalador como root. Execute como seu usuario normal. Quando precisar escrever no Discord/flatpak de sistema, o proprio instalador pede sudo."
+}
+
 lower() { tr '[:upper:]' '[:lower:]' <<<"${1:-}"; }
 upper() { tr '[:lower:]' '[:upper:]' <<<"${1:-}"; }
 
@@ -1384,6 +1400,7 @@ main_menu() {
 # descoberta sem disparar o instalador inteiro. BASH_SOURCE[0] so e igual a $0 quando o
 # script e o processo executado diretamente, nao quando outro script o esta carregando.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    ensure_not_root
     banner
     case "$MODE" in
         install) do_install "$(find_checkout || true)" ;;

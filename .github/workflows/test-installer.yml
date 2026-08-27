@@ -20,6 +20,9 @@ jobs:
       - name: Rodar os testes de descoberta
         run: bash installer/tests/run-tests.sh
 
+      - name: Testar guarda contra execucao como root
+        run: bash installer/tests/test-root-guard.sh
+
       - name: ShellCheck
         uses: ludeeus/action-shellcheck@master
         with:
@@ -38,6 +41,9 @@ jobs:
 
       - name: Rodar os testes de descoberta sob o bash do sistema
         run: /bin/bash installer/tests/run-tests.sh
+
+      - name: Testar guarda contra execucao como root sob o bash do sistema
+        run: /bin/bash installer/tests/test-root-guard.sh
 
       - name: Confirmar que o instalador abre (--help) sob o bash do sistema
         run: /bin/bash installer/streamfix-installer.sh --help
