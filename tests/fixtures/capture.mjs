@@ -13,7 +13,7 @@
 // nunca de exclusao: so os campos nomeados aqui saem da pagina. Nada de id de usuario, de
 // servidor ou de canal, e nenhum dado de quem esta assistindo -- so contadores de saida.
 
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -54,11 +54,24 @@ if (opcao("--duracao") !== undefined && !(duracaoS > 0)) {
 }
 
 const destino = join(aqui, `${cenario}.jsonl`);
-if (existsSync(destino)) {
-    console.error(`${destino} ja existe. Renomeie ou apague antes de regravar.`);
-    process.exit(2);
-}
 mkdirSync(aqui, { recursive: true });
+
+// Criacao exclusiva e atomica, com o descritor mantido aberto ate o fim. Testar a existencia
+// antes e depois abrir nao basta: duas capturas do mesmo cenario -- ou uma captura antiga que
+// ficou viva sem ninguem notar -- passariam as duas pela checagem e intercalariam linhas no
+// mesmo arquivo. O resultado seria uma fixture com duas series misturadas, sem nada que
+// indique isso na leitura. Aconteceu de verdade em 08/09/2026, com um processo orfao.
+let fd;
+try {
+    fd = openSync(destino, "ax");
+} catch (e) {
+    if (e.code === "EEXIST") {
+        console.error(`${destino} ja existe. Renomeie ou apague antes de regravar.`);
+        console.error("Se voce nao criou este arquivo agora, pode haver uma captura ainda rodando.");
+        process.exit(2);
+    }
+    throw e;
+}
 
 // A expressao avaliada na pagina. Devolve uma amostra ja reduzida aos campos permitidos: o
 // recorte acontece dentro do Discord, entao o que nao esta na lista nunca chega ate aqui.
@@ -160,7 +173,7 @@ let falhas = 0;
 let rodando = true;
 
 function gravar(registro) {
-    appendFileSync(destino, JSON.stringify(registro) + "\n");
+    writeSync(fd, JSON.stringify(registro) + "\n");
 }
 
 // Uma linha de status que se reescreve: quem esta gravando esta transmitindo ao mesmo tempo e
@@ -207,6 +220,7 @@ function encerrar() {
     console.log(`\n\nGravado: ${destino}`);
     console.log(`${amostras} amostras, ${falhas} falhas.`);
     if (amostras < 20) console.log("Poucas amostras para virar fixture util -- vale regravar.");
+    try { closeSync(fd); } catch { /* ja fechado */ }
     try { ws.close(); } catch { /* ja fechado */ }
     process.exit(0);
 }
