@@ -1,3 +1,7 @@
 node_modules/
 dist/
 *.log
+
+# Configs WireGuard: contem chave privada. Nunca versionar.
+*.conf
+!api/deploy/*.conf
