@@ -103,6 +103,58 @@ Deixe `-network-lock` no padrão (desligado) durante o spike: com ele ligado, um
 corta a rede em vez de vazar, e isso confunde a leitura de M4 — ali se quer saber o que
 acontece com a transmissão quando o túnel cai, não o que o kill switch faz.
 
+## Resultados
+
+### M2 — respondido em 08/09/2026: ~700 ms
+
+Três ciclos medidos com `Measure-Command`, com o serviço já rodando:
+
+| ciclo | `connect -exit` | `disconnect` |
+|---|---|---|
+| 1 | 854 ms | 742 ms |
+| 2 | 664 ms | 729 ms |
+| 3 | 652 ms | 762 ms |
+
+Pela tabela de decisão abaixo, isso cai na primeira faixa: **a separação `prepare`/`route` era
+desnecessária**. Subir o túnel inteiro custa menos de um segundo, então o `Tunnel` da spec
+perde uma operação e a promessa de interrupção pode ser dita com número medido, não estimado.
+
+O que sobra da recuperação é o custo de recriar a transmissão, não o de subir o túnel.
+
+### O split tunnel da v3 não está no `.conf`
+
+Descoberto ao verificar M1. Com o túnel ligado, **o PowerShell também saiu pelos Estados
+Unidos** — ou seja, a máquina inteira estava no túnel e o `AllowedApps` não valeu. Testadas as
+duas formas, ambas ignoradas na conexão:
+
+- `#@ws:AllowedApps = Discord` — sintaxe da v2, guardada como comentário;
+- `AllowedApps = Discord` — guardada no perfil, mas não aplicada.
+
+A configuração real vive em
+`C:\ProgramData\WireSock Foundation\WireSock Secure Connect\wiresock.config`, nas
+propriedades do serviço:
+
+```
+<EnableSplitTunnelingGlobally>False</EnableSplitTunnelingGlobally>
+<OverrideSplitTunnelingSettings>False</OverrideSplitTunnelingSettings>
+<AllowedApps></AllowedApps>
+```
+
+`EnableSplitTunnelingGlobally` parece ser o interruptor mestre do recurso, e
+`OverrideSplitTunnelingSettings` decide se os valores globais passam por cima dos do perfil.
+Os perfis ficam em `Profiles\`, como `.conf` em texto puro (`EncryptProfiles` está `False`), e
+o `AllowedApps` **está lá** — só não é aplicado enquanto o mestre estiver desligado.
+
+**Consequências para a fase 3**, se a hipótese se confirmar:
+
+- O arquivo pertence a SYSTEM e Administradores: escrever nele **exige elevação**. É trabalho
+  do serviço auxiliar, não do plugin — e encaixa no "uma vez com admin, nunca mais".
+- Se o recurso só funcionar com valores **globais**, o StreamFix estaria mexendo numa
+  configuração de máquina, que colide com qualquer outro uso que a pessoa faça do WireSock.
+  Se os valores **por perfil** valerem, o StreamFix fica contido no próprio perfil. É a
+  diferença entre um vizinho educado e um que mexe nas coisas dos outros, e decide como o
+  desinstalador precisa se comportar.
+
 ## As quatro medições
 
 ### M1 — O filtro por aplicativo alcança a mídia UDP?
