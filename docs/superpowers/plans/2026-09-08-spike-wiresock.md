@@ -8,10 +8,25 @@ desenho, gastando uma tarde em vez de uma fase inteira.
 
 ## O que a documentação já respondeu, antes de instalar nada
 
-**1. `prepare` e `route` não são separáveis pelo CLI.** O `wiresock-client.exe` documenta
-`run`, `install`, `uninstall`, `import` e `reset-network-lock`, mais `sc start` / `sc stop` do
-serviço. **Não existe comando para manter o túnel de pé e desligar só o roteamento.** A spec
-apoiava a promessa de 2-3 segundos de interrupção justamente nessa separação.
+**1. `prepare` e `route` não são separáveis pelo CLI.** Conferido no binário instalado, não só
+na documentação — que está desatualizada: a v3 traz `wiresock-connect-cli.exe`, com um conjunto
+de comandos diferente do `wiresock-client.exe` documentado.
+
+```
+list | connect <perfil> [-log-level ...] [-lac] [-network-lock on|off] [-exit]
+disconnect | import <arquivo> | export <perfil> <arquivo> | delete <perfil>
+status | reset-network-lock
+```
+
+**Não existe comando para manter o túnel de pé e desligar só o roteamento** — o par é
+`connect` / `disconnect`. A spec apoiava a promessa de 2-3 segundos de interrupção justamente
+nessa separação.
+
+Mas a v3 melhora o quadro em dois pontos concretos. O serviço
+(`WireSockConnectService`) fica **sempre rodando**, então `connect` não paga partida de
+serviço, só handshake e aplicação do filtro. E `connect ... -exit` **retorna depois que a
+conexão foi estabelecida**, o que torna M2 uma medição direta e roteirizável, em vez de
+observação de log.
 
 Isso não mata o desenho, mas troca a pergunta. Em vez de "dá para separar?", que já tem
 resposta e é *não*, o que importa medir é **quanto tempo custa uma partida completa**. Se subir
@@ -71,14 +86,22 @@ atualização: mais uma razão para casar por nome e não por caminho.
 Deixe `AllowedIPs = 0.0.0.0/0` no bloco `[Peer]`. Combinado com `AllowedApps`, isso significa
 "todo destino, mas só para o Discord".
 
-### 4. Subir o túnel
+### 4. Importar e conectar
 
-Para o spike, rode em primeiro plano em vez de instalar como serviço — é mais fácil de ligar e
-desligar nas medições M2 e M4, e o log fica à vista:
+O CLI fica em `C:\Program Files\WireSock Secure Connect\command-line\wiresock-connect-cli.exe`.
+A v3 trabalha com perfis: importa uma vez, conecta pelo nome depois.
 
 ```
-wiresock-client.exe run -config "C:\caminho\para\sua.conf" -log-level debug
+wiresock-connect-cli.exe import "C:\caminho\para\sua.conf"
+wiresock-connect-cli.exe list
+wiresock-connect-cli.exe connect <perfil> -log-level debug
+wiresock-connect-cli.exe status
+wiresock-connect-cli.exe disconnect
 ```
+
+Deixe `-network-lock` no padrão (desligado) durante o spike: com ele ligado, uma falha do túnel
+corta a rede em vez de vazar, e isso confunde a leitura de M4 — ali se quer saber o que
+acontece com a transmissão quando o túnel cai, não o que o kill switch faz.
 
 ## As quatro medições
 
@@ -98,8 +121,9 @@ Com o túnel de pé e o Discord rodando, inicie um Go Live e peça para alguém 
 
 Meça do comando até a entrega funcionando, em três marcos:
 
-1. `sc start wiresock-client-service` retorna;
-2. o log do WireSock registra o primeiro handshake;
+1. `connect <perfil> -exit` retorna — ele só volta com a conexão estabelecida, então isso é
+   cronometrável direto: `Measure-Command { ... }`;
+2. `status` reporta conectado;
 3. uma transmissão iniciada agora nasce autorizada.
 
 O número que interessa para o desenho é o **terceiro**, porque é ele que o usuário sente numa
