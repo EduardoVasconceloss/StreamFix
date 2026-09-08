@@ -71,9 +71,11 @@ houver uma saída no Cone Sul.
 
 ### 3. Restringir o túnel ao Discord
 
-É o ponto do desenho inteiro. No bloco `[Interface]` do `.conf`, acrescente:
+É o ponto do desenho inteiro. No bloco **`[Peer]`** do `.conf` — não no `[Interface]`, ver
+"A sintaxe certa" mais abaixo — acrescente ao final:
 
 ```
+# [Peer] WireSock extensions
 #@ws:AllowedApps = Discord
 ```
 
@@ -140,10 +142,13 @@ propriedades do serviço:
 <AllowedApps></AllowedApps>
 ```
 
-`EnableSplitTunnelingGlobally` parece ser o interruptor mestre do recurso, e
-`OverrideSplitTunnelingSettings` decide se os valores globais passam por cima dos do perfil.
-Os perfis ficam em `Profiles\`, como `.conf` em texto puro (`EncryptProfiles` está `False`), e
-o `AllowedApps` **está lá** — só não é aplicado enquanto o mestre estiver desligado.
+Essa leitura estava errada, e os textos da própria interface a desmentem:
+`xstrEnableSplitTunneling` é **"Aplicar split tunneling a todos os perfis"**. Não é interruptor
+mestre, é sobrescrita — e deve ficar **desligada**, para o StreamFix não pisar na configuração
+de outros usos do WireSock.
+
+O recurso é **por perfil**. Os perfis ficam em `Profiles\`, como `.conf` em texto puro
+(`EncryptProfiles` está `False`). A causa real da falha era outra, e está na seção seguinte.
 
 ### A sintaxe certa: `#@ws:` vai no `[Peer]`, não no `[Interface]`
 
