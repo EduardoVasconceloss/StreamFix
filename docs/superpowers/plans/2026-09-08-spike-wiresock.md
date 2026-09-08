@@ -234,6 +234,39 @@ Mas acrescenta um custo que o desenho precisa contabilizar: **desligar o túnel 
 gateway junto**, e uma reconexão de gateway no meio de uma transmissão não é de graça, mesmo
 que a mídia sobreviva. Medir isso faz parte de M4.
 
+### Tentativa de M1 em 08/09/2026: inválida, por três motivos somados
+
+O espectador recebeu 2012, mas o teste não vale. Registrado porque cada motivo é uma armadilha
+que se repete.
+
+**1. O StreamFix continuou ligado, e os dois roteamentos se empilharam.** O Discord escutava em
+`127.0.0.1` (roteador SOCKS do plugin) e saía para um proxy gratuito do pool — de dentro do
+túnel. O caminho virou Discord → túnel nos EUA → proxy público → Discord.
+
+**2. O cliente passou a janela inteira em tempestade de reconexão.** Gateway e os dois sockets
+RTC reconectando a cada ~25 s, do começo ao fim dos cinco minutos com o túnel de pé. Nenhuma
+conclusão sobre entrega de vídeo se sustenta em cima disso.
+
+**3. A transmissão nunca foi recriada.** Mesmo `streamId`, mesmo servidor de mídia, sempre
+`[RESUME]` da mesma sessão nascida **antes** do túnel. Pelos fatos 1 e 6 da pesquisa, uma
+sessão negada no nascimento não se recupera ligando o túnel depois.
+
+**Descartado no caminho:** não é MTU. O MTU efetivo do túnel é 1440, o sistema o respeita, e uma
+transferência TCP de 5 MB atravessa íntegra (`http=200`, 1,5 MB/s contra 6,5 direto — a queda é
+só a distância até os EUA). Valia checar, porque o padrão de "conexão longa morre e reconecta"
+costuma ser MTU; aqui não era.
+
+**Protocolo válido, na ordem:**
+
+1. Desligar o StreamFix. Não é opcional: o túnel substitui o roteamento do plugin, não convive
+   com ele.
+2. Ligar o túnel e confirmar `status`.
+3. Confirmar que o Discord está estável — sem reconexão de gateway por um minuto.
+4. **Só então** iniciar uma transmissão nova.
+5. O espectador entra.
+
+O passo 3 é o que faltou. Sem ele, os passos 4 e 5 medem outra coisa.
+
 ## As quatro medições
 
 ### M1 — O filtro por aplicativo alcança a mídia UDP?
