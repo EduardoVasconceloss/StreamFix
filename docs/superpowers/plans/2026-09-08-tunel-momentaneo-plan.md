@@ -128,6 +128,23 @@ Três exigências vindas da primeira captura, e não do desenho original:
 - **Captura e entrega são eixos separados.** Os contadores de captura dizem qual dos dois
   falhou; sem eles, os dois casos parecem o mesmo zero.
 
+**Parcialmente feito.** `streamFix/tunnel/monitor.ts` implementa a decisão, como função pura
+sobre a série — não lê store, não olha o relógio, o tempo entra pelo carimbo da amostra. A
+presença de espectador vem de `ApplicationStreamingStore.getViewerIds()`, tipada no pacote de
+tipos do Vencord, e entra como parâmetro.
+
+A quebra passou a ter **causa**: `entrega` ou `captura`. Só `entrega` justifica recuperação —
+religar o túnel e recriar a transmissão não conserta uma captura parada. Isso não estava na
+spec e veio da fixture.
+
+Cobertura em `tests/monitor.test.cjs`, incluindo a série real: com zero espectador nenhuma das
+201 amostras dispara, e trocando só esse campo para 1 o veredito vira quebra de entrega —
+prova de que é a regra do espectador que segura, e não falta de sinal. Cada uma das quatro
+regras foi verificada por mutação: removida, ao menos um teste falha.
+
+**Falta:** a coleta no renderer que alimenta o monitor, e o modo simulação. Os dois só se
+validam de verdade contra as fixtures que ainda dependem de uma sessão com espectador.
+
 **Prova:** os testes rodam as cinco fixtures. Disparar nas duas de quebra, nunca nas três boas.
 Depois, uma sessão real em modo simulação, com espectador, em que o log diz "recuperaria agora"
 no momento em que o vídeo de fato morreu.

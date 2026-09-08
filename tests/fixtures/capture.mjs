@@ -103,6 +103,16 @@ const AMOSTRA = `(async () => {
     for (const k of Object.keys(o).slice(0, 20)) if (typeof o[k] === "number") r[k] = o[k];
     return r;
   };
+  // Quantos assistem. E o sinal que decide se o monitor pode concluir alguma coisa:
+  // `sinkWantAsInt` fica em 100 mesmo sem ninguem, entao nao serve para isso. So a contagem
+  // e gravada -- os ids de quem assiste identificam pessoas e nao entram na fixture.
+  let espectadores = null;
+  try {
+    const ss = Vencord.Webpack.findStore("ApplicationStreamingStore");
+    const meu = ss.getCurrentUserActiveStream();
+    espectadores = meu == null ? null : (ss.getViewerIds(meu) ?? []).length;
+  } catch (e) { espectadores = null; }
+
   const out = [];
   for (const c of conns) {
     let stats = null;
@@ -126,7 +136,7 @@ const AMOSTRA = `(async () => {
       audio,
     });
   }
-  return { conns: conns.length, dados: out };
+  return { conns: conns.length, espectadores, dados: out };
 })()`;
 
 // ---------------------------------------------------------------------------
@@ -182,7 +192,7 @@ function status(ultima) {
     const v = ultima?.dados?.[0]?.video?.[0];
     const frames = v?.framesEncoded ?? "-";
     const want = v?.sinkWantAsInt ?? "-";
-    const linha = `  ${amostras} amostras | conexoes=${ultima?.conns ?? 0} | framesEncoded=${frames} | sinkWant=${want} | falhas=${falhas}`;
+    const linha = `  ${amostras} amostras | conexoes=${ultima?.conns ?? 0} | espectadores=${ultima?.espectadores ?? "-"} | framesEncoded=${frames} | falhas=${falhas}`;
     process.stdout.write("\r" + linha.padEnd(88));
 }
 
@@ -236,7 +246,8 @@ ws.onopen = () => {
         intervaloMs: INTERVALO_MS,
         // Versao do formato: se os campos amostrados mudarem, as fixtures antigas continuam
         // legiveis e os testes conseguem dizer qual formato estao lendo.
-        formato: 1,
+        // 2: passou a gravar a contagem de espectadores, sem a qual o monitor nao conclui nada.
+        formato: 2,
     });
     console.log(`Gravando "${cenario}" em ${destino}`);
     console.log(duracaoS > 0
