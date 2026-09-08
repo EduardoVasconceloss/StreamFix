@@ -65,6 +65,11 @@ const PROBE_TIMEOUT_MS = 6000;
 // segura o gateway.
 const WARM_PROBE_TIMEOUT_MS = 2500;
 
+// A saida que a pessoa escolheu merece mais paciencia que uma publica descartavel. O Tor
+// estoura o prazo curto enquanto monta o primeiro circuito e responde em ~1.5s depois de
+// quente, entao desistir na primeira tentativa o descartava com ele no ar.
+const MANUAL_RETRY_TIMEOUT_MS = 6000;
+
 const PARALLEL_PROBES = 12;
 const MAX_CANDIDATES = 48;
 const MIN_UPTIME = 90;
@@ -439,7 +444,12 @@ async function measure(proxy: string, timeoutMs = PROBE_TIMEOUT_MS) {
     const response = await readOverTls(socket, TRACE_HOST, TRACE_PATH, timeoutMs);
     if (response === null || !/^HTTP\/1\.[01] 200/.test(response)) return null;
 
-    const country = /(?:^|\n)loc=([A-Za-z]{2})/.exec(response);
+    // A Cloudflare responde `loc=T1` quando reconhece uma saida Tor, em vez de um pais ISO.
+    // Exigir duas letras descartava o Tor mesmo com ele no ar e alcancando o gateway, que era
+    // justamente a saida que o campo Proxy foi feito pra receber. `T1` nao diz o pais real do
+    // exit; a exclusao por pais nao consegue barrar um exit brasileiro, e por isso ela nao
+    // vale pra saida manual, escolhida a dedo por quem usa.
+    const country = /(?:^|\n)loc=([A-Za-z0-9]{2})/.exec(response);
     if (country === null) return null;
 
     const ip = /(?:^|\n)ip=(\S+)/.exec(response);
@@ -638,7 +648,15 @@ async function pickExit(excluded: Set<string>) {
         // Sem testar, uma saida fora do ar viraria conexao direta dentro do roteador e o
         // bypass falharia em silencio, que foi exatamente o que aconteceu com o Tor fechado.
         const started = Date.now();
-        if (await measure(manual.proxy, WARM_PROBE_TIMEOUT_MS) !== null) {
+        // Duas tentativas: a curta preserva a abertura rapida quando a saida ja esta pronta,
+        // e a segunda cobre o circuito frio do Tor, que falha na primeira e sobe na seguinte.
+        let responded = await measure(manual.proxy, WARM_PROBE_TIMEOUT_MS) !== null;
+        if (!responded) {
+            log(`seu proxy nao respondeu em ${WARM_PROBE_TIMEOUT_MS}ms, tentando mais uma vez`);
+            responded = await measure(manual.proxy, MANUAL_RETRY_TIMEOUT_MS) !== null;
+        }
+
+        if (responded) {
             log(`seu proxy respondeu em ${Date.now() - started}ms: ${manual.proxy}`);
             return settleExit(manual.proxy);
         }
