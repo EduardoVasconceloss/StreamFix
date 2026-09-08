@@ -79,9 +79,36 @@ cada 500 ms, pelo CDP, e grava JSON Lines com carimbo de tempo:
 **Prova:** os cinco arquivos existem, e uma leitura manual confirma que `active` permanece
 `true` na fixture de quebra — reafirmando por dado, não por memória, que ele não serve de sinal.
 
-**Risco:** depende de um segundo humano. Se não houver, a fase 2 pode começar com fixtures
-sintéticas escritas à mão, **desde que marcadas como sintéticas** e substituídas depois. Uma
-fixture sintética prova a máquina, não a realidade.
+**Risco:** depende de um segundo humano — e de mais gente do que parecia. Só `sem-espectador`
+se grava sozinho. Os outros quatro precisam de alguém assistindo: sem espectador não há
+entrega para observar, e `saudavel-longa` e `eventos-locais` também exigem a VPN ligada, senão
+não há entrega nenhuma para chamar de saudável.
+
+### Achados da primeira captura (`sem-espectador`, 08/09/2026)
+
+235 amostras, nenhuma falha, campos preenchidos. Três coisas medidas que mudam o desenho:
+
+**1. `sinkWantAsInt` vale 100 com ninguém assistindo.** Ficou em 100 nos 100 segundos inteiros,
+sem nenhum espectador. **A regra do monitor escrita na spec — "alguém pedindo e nada sendo
+codificado é quebra" — dispararia aqui**, e este é justamente o cenário em que ela não pode
+disparar. O campo não serve como sinal de que existe espectador; a presença precisa vir de
+outra fonte, a definir na fase 2.
+
+Some-se a isso que, sem espectador, uma transmissão **saudável** também codifica zero quadro.
+Do lado de quem emite, "ninguém está assistindo" e "o servidor recusou" são indistinguíveis.
+Isso não é limitação da nossa medição, é o comportamento do sistema, e combina com o fato 4 da
+pesquisa: a revalidação acontece quando um espectador entra. **O monitor só pode concluir
+alguma coisa quando há espectador.**
+
+**2. Os contadores zeram numa renegociação de codec.** Às 21:27:10 o Discord trocou H264 por
+H265 no mesmo ssrc, e `bytesSent`/`packetsSent` voltaram a zero. Um monitor que leia "contador
+parou de crescer" chamaria isso de quebra. **Queda de contador é reinício de base, não
+ausência de progresso** — a fase 2 precisa tratar isso explicitamente.
+
+**3. Os contadores de captura fazem o que se esperava deles.** Enquanto `framesEncoded` ficou
+em zero o tempo todo, a captura foi de 0 a 6079 quadros, 1295 deles únicos. Separam
+"a captura parou" de "a entrega foi recusada" sem ambiguidade. De quebra, a razão entre total
+e únicos (~21%) é o defeito de quadro em branco aparecendo em número.
 
 ## Fase 2 — `SessionMonitor` e modo simulação
 
@@ -90,6 +117,16 @@ fixture sintética prova a máquina, não a realidade.
 **Entregável:** `streamFix/tunnel/monitor.ts` — função pura de série temporal para estado
 (`healthy` / `broken`), com relógio injetável, mais a coleta que a alimenta no renderer. E o
 **modo simulação**: o plugin observa, registra o que *faria*, não faz.
+
+Três exigências vindas da primeira captura, e não do desenho original:
+
+- **Presença de espectador tem de vir de outra fonte que não `sinkWantAsInt`**, que fica em 100
+  mesmo sem ninguém. Sem espectador o monitor não conclui nada — permanece em `healthy`,
+  porque zero quadro codificado é o comportamento correto ali.
+- **Queda de contador é reinício de base.** A renegociação de codec zera `bytesSent` e
+  `packetsSent` no mesmo ssrc.
+- **Captura e entrega são eixos separados.** Os contadores de captura dizem qual dos dois
+  falhou; sem eles, os dois casos parecem o mesmo zero.
 
 **Prova:** os testes rodam as cinco fixtures. Disparar nas duas de quebra, nunca nas três boas.
 Depois, uma sessão real em modo simulação, com espectador, em que o log diz "recuperaria agora"
