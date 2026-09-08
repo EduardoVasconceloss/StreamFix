@@ -34,16 +34,50 @@ alcança um processo que já estava rodando antes do túnel subir.
 
 ## Preparação
 
-Instale o WireSock Secure Connect (versão gratuita) e tenha uma config WireGuard de um
-provedor com saída fora do Brasil.
+### 1. Instalar o WireSock
 
-> **A chave privada da config é credencial.** Não cole o conteúdo do arquivo em conversa, em
-> issue ou em log. Passe sempre o caminho do arquivo, nunca o conteúdo.
+```
+winget install --id NTKERNEL.WireSockVPNClient -e --accept-source-agreements --accept-package-agreements
+```
 
-Na config, restrinja o túnel ao Discord — é o ponto do desenho inteiro:
+Pede elevação (instala um driver de filtro de rede), então roda numa janela com UAC, não a
+partir de um processo sem privilégio.
+
+### 2. Obter uma config WireGuard
+
+Em `account.protonvpn.com`, **Downloads → WireGuard configuration**: dê um nome, escolha um
+servidor e baixe o `.conf`. O plano gratuito gera config normalmente; a única opção oferecida é
+o VPN Accelerator, e os servidores disponíveis ficam longe do Brasil. **Para o spike isso não
+importa** — aqui se mede mecanismo, não latência. O número de latência só passa a valer quando
+houver uma saída no Cone Sul.
+
+> **A chave privada dentro do `.conf` é credencial.** Não cole o conteúdo do arquivo em
+> conversa, em issue, em log ou no relatório do `/streamfix`. Passe sempre o caminho.
+
+### 3. Restringir o túnel ao Discord
+
+É o ponto do desenho inteiro. No bloco `[Interface]` do `.conf`, acrescente:
 
 ```
 #@ws:AllowedApps = Discord
+```
+
+O nome casa por processo, sem caminho e sem `.exe`, então cobre de uma vez os vários processos
+que o Discord abre — o que carrega a mídia não é necessariamente o de nome mais óbvio. O
+executável nesta máquina está em
+`%LOCALAPPDATA%\Discord\app-<versao>\Discord.exe`, e o número da versão muda a cada
+atualização: mais uma razão para casar por nome e não por caminho.
+
+Deixe `AllowedIPs = 0.0.0.0/0` no bloco `[Peer]`. Combinado com `AllowedApps`, isso significa
+"todo destino, mas só para o Discord".
+
+### 4. Subir o túnel
+
+Para o spike, rode em primeiro plano em vez de instalar como serviço — é mais fácil de ligar e
+desligar nas medições M2 e M4, e o log fica à vista:
+
+```
+wiresock-client.exe run -config "C:\caminho\para\sua.conf" -log-level debug
 ```
 
 ## As quatro medições
