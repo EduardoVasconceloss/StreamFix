@@ -34,6 +34,30 @@ espectador de verdade entrando. **Sem essa captura, a fase 2 não começa.**
 **3. Nenhum dos testes em `tests/` roda em CI.** Só `installer/tests/*` roda
 (`test-installer.yml`). Os 17 testes atuais não guardam nada contra regressão em PR.
 
+**4. O instalador não roda com admin — a spec supõe que sim.** A spec diz que "o instalador
+existente roda uma vez com admin". Não roda: nenhum dos scripts em `installer/` eleva, e não
+precisava, porque tudo que fazem hoje é de usuário (checkout do mod, pasta do plugin, `winget`
+de ferramentas de linha de comando).
+
+O componente de túnel instala um driver de filtro de rede, e isso exige elevação. Então
+**a fase 3 introduz privilégio num instalador que hoje não tem nenhum**, e isso é uma mudança
+de natureza, não um detalhe de implementação. A recomendação é elevar **só esse passo**, num
+processo separado, mantendo o resto sem privilégio: a superfície fica menor e o "uma vez com
+admin, nunca mais" da spec continua valendo.
+
+**Decisão do usuário (08/09/2026): a instalação e a configuração são automáticas**, feitas
+pelo instalador do plugin. Isso confirma o que a spec já dizia e fecha a pergunta que o
+roteiro do spike tinha deixado em aberto. Encaixa no padrão que o instalador já usa para Node,
+pnpm e Tor: `winget install --silent` com confirmação única, e recuo para instalador oficial
+com versão e hash fixos quando não há `winget`. O pacote é `NTKERNEL.WireSockVPNClient`.
+
+Duas coisas que a automação **não** resolve, e que continuam abertas:
+
+- **A config WireGuard.** Instalar o WireSock não produz uma config. É o `TunnelProvider` da
+  fase 4, e é lá que mora a fricção que o projeto quer evitar.
+- **A desinstalação.** Remover o StreamFix não pode remover um WireSock que já estava na
+  máquina antes. O instalador precisa registrar se foi ele quem instalou.
+
 ## Fase 0 — A rede de segurança (pequena, primeiro)
 
 Nada abaixo é confiável se a suíte não roda sozinha.

@@ -20,9 +20,14 @@ problema que não existe. Se leva 8 s, a recuperação automática fica cara dem
 quente passa a ser a defesa principal.
 
 **2. Licença: gratuito para uso pessoal, não comercial.** Serve para este projeto e para quem
-usar o plugin. Fica um ponto a decidir na fase 3: o instalador do StreamFix pode automatizar a
-instalação de um componente de terceiro com essa licença, ou deve apenas orientar a pessoa a
-instalá-lo? A segunda opção é mais segura e é o padrão a adotar salvo decisão contrária.
+usar o plugin. **Decidido em 08/09/2026: o instalador automatiza.** Cada pessoa instala na
+própria máquina sob a própria licença de uso pessoal, pelo canal oficial
+(`winget install --id NTKERNEL.WireSockVPNClient --silent`), sem o projeto redistribuir nada —
+o mesmo padrão já usado para Node, pnpm e Tor.
+
+Consequência a tratar na fase 3: o componente instala um driver de filtro de rede e exige
+elevação, e **hoje nenhum script em `installer/` eleva**. A recomendação é elevar só esse
+passo, num processo separado.
 
 **3. Não documentado, e por isso medido aqui:** se o filtro por aplicativo alcança UDP, e se
 alcança um processo que já estava rodando antes do túnel subir.
