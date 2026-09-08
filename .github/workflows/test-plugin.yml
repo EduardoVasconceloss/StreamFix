@@ -1,0 +1,45 @@
+name: Testar plugin
+
+# Ate agora nenhum teste de `tests/` rodava em CI -- so os do instalador. A suite existia e
+# nao guardava nada: uma regressao no roteamento ou na escolha de saida passaria pela revisao
+# sem nada ficar vermelho. Roda tambem em push porque neste repo os commits vao direto pra
+# main; so em pull_request deixaria justamente o caminho mais usado sem cobertura.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "streamFix/**"
+      - "tests/**"
+      - ".github/workflows/test-plugin.yml"
+  pull_request:
+    # Repetido em vez de reaproveitado: o parser de workflow do GitHub nao resolve ancora YAML.
+    paths:
+      - "streamFix/**"
+      - "tests/**"
+      - ".github/workflows/test-plugin.yml"
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # O harness carrega o `native.ts` de verdade com `stripTypeScriptTypes` do `node:module`,
+      # que so existe do Node 22.18 em diante. Fixado no 24 pra nao depender do que o runner
+      # traz por padrao: uma troca de imagem derrubaria a suite com um erro que nao aponta pra
+      # causa.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # O caminho e expandido pelo proprio Node, entre aspas, porque bash e pwsh tratam glob de
+      # forma diferente e este workflow roda nos dois. `node --test tests/` nao serve: o Node
+      # tenta carregar o diretorio como modulo e falha antes de achar teste nenhum.
+      - name: Rodar os testes do plugin
+        run: node --test "tests/**/*.test.cjs"

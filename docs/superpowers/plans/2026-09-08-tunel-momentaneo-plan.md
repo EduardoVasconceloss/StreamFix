@@ -38,10 +38,17 @@ espectador de verdade entrando. **Sem essa captura, a fase 2 não começa.**
 
 Nada abaixo é confiável se a suíte não roda sozinha.
 
-- Job de CI executando `node --test tests/` em `windows-latest` e `ubuntu-latest`, em push e PR.
-- **Prova:** abrir um PR com uma quebra proposital de um teste e ver o job vermelho.
+- Job de CI executando `node --test "tests/**/*.test.cjs"` em `windows-latest` e
+  `ubuntu-latest`, em push na main e em PR.
+- **Prova:** quebrar um teste de propósito e ver o comando sair com código 1.
 
 Serve também à issue #30.
+
+**Feito** em `.github/workflows/test-plugin.yml`. Dois detalhes que custaram tentativa:
+`node --test tests/` não funciona — o Node tenta carregar o diretório como módulo e falha
+antes de achar teste algum; e o parser de workflow do GitHub não resolve âncora YAML, então a
+lista de `paths` fica repetida entre `push` e `pull_request`. O Node está fixado no 24 porque
+o harness depende de `stripTypeScriptTypes`, que só existe do 22.18 em diante.
 
 ## Fase 1 — Captura das fixtures (bloqueia a fase 2, depende de outra pessoa)
 
