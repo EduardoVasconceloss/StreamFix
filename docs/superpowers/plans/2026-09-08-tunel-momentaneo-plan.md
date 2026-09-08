@@ -163,14 +163,20 @@ gravação real antes de o `Orchestrator` existir.
 
 **Ordem interna, do mais arriscado ao mais mecânico:**
 
-1. **Spike, manual, sem código de produto:** com WireSock e uma config real, provar as duas
-   afirmações de que a spec depende:
-   - o filtro por aplicativo pega a mídia **UDP** do Discord (o PAC nunca pegou; é a razão de
-     tudo isto existir);
-   - `prepare` e `route` são separáveis — dá para completar o handshake antes e ligar a rota
-     depois em menos de 1 s. **É essa medição que sustenta a promessa de 2-3 s de interrupção
-     em vez de 5-10 s.** Se a separação não existir, a spec continua válida, mas o custo da
-     recuperação precisa ser reescrito com o número medido.
+1. **Spike, manual, sem código de produto.** Roteiro em
+   `2026-09-08-spike-wiresock.md`, com quatro medições e o que cada resultado implica.
+
+   A documentação do WireSock já respondeu uma delas, antes de instalar qualquer coisa:
+   **`prepare` e `route` não são separáveis pelo CLI.** Não existe comando para manter o túnel
+   de pé e desligar só o roteamento — o ciclo é iniciar e parar o serviço. A spec apoiava a
+   promessa de 2-3 s de interrupção nessa separação, então a pergunta passa a ser quanto custa
+   uma partida completa: se for ~1 s, a separação nunca foi necessária; se for 8 s, a
+   recuperação automática fica cara e a janela quente vira a defesa principal.
+
+   As outras três continuam abertas e só se respondem medindo: se o filtro alcança a mídia
+   **UDP** (o PAC nunca alcançou, é a razão de tudo isto existir), se alcança um Discord **já
+   aberto**, e se a transmissão sobrevive à queda do túnel. As duas últimas podem matar o modo
+   momentâneo — e nesse caso a fase 5 encolhe, porque `RECOVERING` deixa de existir.
 2. Serviço auxiliar com named pipe, operações fixas e enumeradas, ACL restrita ao usuário que
    instalou, validação da config antes de virar rota.
 3. Segredos por DPAPI no escopo do usuário; a chave privada nunca em log nem no relatório do
