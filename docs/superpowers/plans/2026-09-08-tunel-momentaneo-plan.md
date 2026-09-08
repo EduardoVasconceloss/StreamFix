@@ -227,6 +227,32 @@ persistindo **sessão**, nunca senha.
 
 **Prova:** unidade com API mockada; manual com uma conta gratuita de verdade.
 
+### Como o GoLiveBypass resolve isto (conferido no repositório, 08/09/2026)
+
+Eles não escreveram: vendorizaram `hatemosphere/protonvpn-wg-confgen` em
+`tools/proton-confgen/`, um utilitário Go que faz login SRP na Proton, gera um par de chaves
+local e pede um certificado à API. Usa as bibliotecas da própria Proton
+(`ProtonMail/go-srp`, `ProtonVPN/go-vpn-lib/ed25519`), escolhe o melhor servidor pelo `Score`
+que a Proton publica, e sabe emitir certificado **só de sessão**, que nem aparece no painel da
+conta.
+
+**GPL-3.0, a mesma licença do StreamFix** — reaproveitar é legítimo.
+
+Três coisas que isso **não** resolve, e que precisam entrar na decisão:
+
+- **A conta continua existindo.** A API tira os cliques no painel, não o cadastro. A fricção
+  que o projeto quer eliminar é a conta, e ela permanece.
+- **A Proton pede verificação humana.** O código tem um tipo de erro dedicado a isso, com URL
+  de CAPTCHA — sinal de que acontece na prática. Um instalador automático precisa saber
+  degradar para "abra esta URL e resolva", o que quebra a instalação desacompanhada.
+- **É Go, e o StreamFix é TypeScript.** Ou o instalador baixa um binário de terceiro (mais um
+  elo na cadeia de suprimento, com verificação de hash), ou o SRP é reimplementado em TS.
+  Nenhum dos dois é barato, e a escolha é da fase 4.
+
+**Ordem:** isto vem depois do spike. Se M1, M3 ou M4 derrubarem o WireSock ou o modo
+momentâneo, o provedor muda de requisito. Para o spike em si, config baixada à mão é mais
+rápida que qualquer automação.
+
 ## Fase 5 — `Orchestrator` e `StreamController`
 
 **Objetivo:** juntar tudo na máquina de estados.
