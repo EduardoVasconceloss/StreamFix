@@ -253,6 +253,40 @@ Três coisas que isso **não** resolve, e que precisam entrar na decisão:
 momentâneo, o provedor muda de requisito. Para o spike em si, config baixada à mão é mais
 rápida que qualquer automação.
 
+### Opção registrada: saída própria, em vez de conta de provedor
+
+Levantada em 08/09/2026. O que incomoda no `ProtonProvider` não são os cliques, é **o cadastro**
+— e ele só desaparece se a saída for do projeto. Um servidor WireGuard próprio, com um peer por
+usuário, elimina a conta de todo mundo.
+
+**Conta compartilhada num provedor não serve, e não é questão de gosto:** o plano gratuito da
+Proton permite **1 conexão simultânea**, então uma conta global atenderia uma pessoa por vez no
+mundo. Fora isso, credencial embutida em plugin de código aberto não é segredo, e um único
+usuário abusando derruba o acesso de todos de uma vez.
+
+**A concorrência é o gargalo, não o volume.** Com os 1,7 Mbps medidos na nossa fixture, cada
+início de transmissão custa ~1 MB no momentâneo puro e ~38 MB com a janela quente de 3 min —
+irrelevante contra os 10 TB mensais do free tier da Oracle. O que limita é quanta gente está
+dentro da janela quente ao mesmo tempo: a 1,7 Mbps cada, 100 Mbps sustentam algumas dezenas.
+Números de guardanapo, não medição.
+
+**Duas restrições concretas da Oracle**, apuradas na documentação:
+
+- Recursos Always Free só existem **na região de origem da tenancy**, e a região de origem não
+  pode ser trocada. Uma conta cuja origem é São Paulo não sobe instância gratuita no Chile.
+- **Uma instância em São Paulo não serve como saída**, porque tem IP brasileiro — é exatamente
+  o que o bloqueio olha (fato 5 da pesquisa). Ela serve bem para o **serviço de coordenação**,
+  que registra a chave pública de cada usuário como peer: isso não é sensível a latência e não
+  precisa estar fora do país.
+
+**Isto só importa se o modo momentâneo cair.** Enquanto o túnel vive segundos, a distância da
+saída não é sentida — a mídia volta a sair direta logo em seguida, e uma saída gratuita nos
+Estados Unidos serve igual a uma no Chile. A saída própria e a proximidade geográfica só viram
+requisito no modo permanente. Mais uma razão para o spike vir antes.
+
+O custo desta direção é o projeto passar a operar infraestrutura, e alguém responder pelo
+tráfego que sai dela.
+
 ## Fase 5 — `Orchestrator` e `StreamController`
 
 **Objetivo:** juntar tudo na máquina de estados.
