@@ -195,6 +195,27 @@ perfis" desligado é parte do desenho, não detalhe.
   mas a fase 3 precisa gerar o arquivo sozinha, e por isso o formato acima é o artefato mais
   valioso deste spike.
 
+### M1, primeira metade — o filtro carrega UDP. Respondido sem espectador.
+
+A pergunta "o filtro por aplicativo alcança UDP?" não precisava de transmissão nem de
+espectador para ser respondida, e separá-la valeu a pena: isola o mecanismo do resto.
+
+O teste usa o DNS interno do túnel (`10.2.0.1`), endereço que **só existe dentro dele**, e um
+perfil de teste que tunela apenas o `nslookup`:
+
+| condição | consulta UDP a `10.2.0.1` |
+|---|---|
+| túnel desligado | não responde, como esperado |
+| túnel ligado, tunelando só o `nslookup` | **responde** — `example.com` resolvido |
+| mesmo momento, PowerShell fora do filtro | segue em `loc=BR` |
+
+Prova as duas metades de uma vez: o filtro **carrega UDP**, e roteia positivamente o processo
+nomeado em vez de só deixar passar. Um perfil de teste importado pelo CLI, sem elevação,
+resolve isso em um minuto — vale repetir sempre que se trocar de componente de túnel.
+
+Falta da outra metade de M1 apenas o que depende do servidor do Discord: se a mídia, saindo por
+esse caminho, é aceita como não brasileira.
+
 ## As quatro medições
 
 ### M1 — O filtro por aplicativo alcança a mídia UDP?
