@@ -216,6 +216,24 @@ resolve isso em um minuto — vale repetir sempre que se trocar de componente de
 Falta da outra metade de M1 apenas o que depende do servidor do Discord: se a mídia, saindo por
 esse caminho, é aceita como não brasileira.
 
+### Observação acidental sobre M4
+
+Ao trocar de perfil (`disconnect` seguido de `connect`), **as conexões TCP do Discord caíram**.
+Os processos seguiram vivos e o cliente se reconectou sozinho em segundos.
+
+`TCPSocketTermination` já estava `False`, então não é o WireSock encerrando sockets de
+propósito: o caminho some debaixo das conexões estabelecidas e elas quebram. Não há botão para
+isso.
+
+**O que isso não prova:** a mídia é UDP, sem conexão para quebrar — um fluxo UDP simplesmente
+passaria a sair por outro IP. Se a sessão de entrega sobrevive a essa troca é exatamente a
+pergunta de M4, e a queda do TCP não a responde. Há indício em contrário na pesquisa: com uma
+VPN de sistema desligada no meio, a entrega sobreviveu 16 minutos.
+
+Mas acrescenta um custo que o desenho precisa contabilizar: **desligar o túnel derruba o
+gateway junto**, e uma reconexão de gateway no meio de uma transmissão não é de graça, mesmo
+que a mídia sobreviva. Medir isso faz parte de M4.
+
 ## As quatro medições
 
 ### M1 — O filtro por aplicativo alcança a mídia UDP?
