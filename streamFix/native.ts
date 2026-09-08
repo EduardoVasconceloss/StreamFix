@@ -29,6 +29,35 @@ const GATEWAY_HOSTS = ["gateway.discord.gg", "remote-auth-gateway.discord.gg"];
 const GATEWAY_HOST_PATTERN_SOURCE = "^(remote-auth-)?gateway(-[a-z0-9]+)*\\.discord\\.gg$";
 const LOGIN_HOSTS = ["discord.com", "canary.discord.com", "ptb.discord.com"];
 
+// Experimento de 2026-09-08, DESLIGADO porque a hipotese foi refutada: alinhar o controle TCP
+// de midia a saida do gateway nao devolve o video. Com `*.discord.media` saindo por outro pais
+// e trafego bidirecional confirmado, o servidor negou a entrega assim mesmo -- ele valida o IP
+// da midia UDP, nao o do controle TCP. Ver docs/research/regressao-encoder-inativo-2026-09-03.md,
+// secao 12b, item 5.
+//
+// Ligado, custa latencia no estabelecimento do stream e entrega metadados das conexoes de midia
+// a uma saida de terceiro, sem nenhum ganho em troca. O codigo e a instrumentacao ficam para
+// quem precisar reinvestigar; nao religar sem uma hipotese nova.
+// Apenas TCP via PAC: nao implementa SOCKS UDP ASSOCIATE nem muda a rede do sistema.
+const MEDIA_CONTROL_EXPERIMENT = false;
+const MEDIA_HOST_PATTERN_SOURCE = "^([a-z0-9-]+\\.)+discord\\.media$";
+const MEDIA_HOST_PATTERN = new RegExp(MEDIA_HOST_PATTERN_SOURCE);
+const GATEWAY_HOST_PATTERN = new RegExp(GATEWAY_HOST_PATTERN_SOURCE);
+const MEDIA_DEBUG = "[DEBUG-media-control]";
+const debugExits = new Map<string, number>();
+const debugConnections = new Map<number, { kind: string; route: string; tx: number; rx: number; }>();
+let debugConnectionId = 0;
+
+function debugExit(value: string | null) {
+    if (value === null) return "DIRECT";
+    if (!debugExits.has(value)) debugExits.set(value, debugExits.size + 1);
+    return `saida#${debugExits.get(value)}`;
+}
+
+function debugConnectionLine(id: number, state: { kind: string; route: string; tx: number; rx: number; }) {
+    return `${MEDIA_DEBUG} conexao#${id} ${state.kind} ${state.route} tx=${state.tx} rx=${state.rx}`;
+}
+
 const MAX_LIST_BYTES = 1024 * 1024;
 const PROBE_TIMEOUT_MS = 6000;
 
@@ -704,6 +733,14 @@ async function serveRequest(client: Socket, request: Buffer | null) {
 
     const target = readTarget(request);
     if (target === null) return refuse(client);
+    target.host = target.host.toLowerCase().replace(/\.$/, "");
+
+    const isMediaHost = MEDIA_CONTROL_EXPERIMENT && MEDIA_HOST_PATTERN.test(target.host);
+    const debugKind = MEDIA_CONTROL_EXPERIMENT
+        ? (isMediaHost ? "media" : GATEWAY_HOST_PATTERN.test(target.host) ? "gateway" : null)
+        : null;
+    const debugId = debugKind === null ? 0 : ++debugConnectionId;
+    if (debugKind !== null) log(`${MEDIA_DEBUG} conexao#${debugId} ${debugKind} solicitada porta=${target.port}`);
 
     // Sucesso respondido antes de saber a saida, de proposito: o Chromium para de usar um
     // roteador que responda lento/negativo, sem avisar. Uma saida que falhe vira conexao
@@ -712,6 +749,8 @@ async function serveRequest(client: Socket, request: Buffer | null) {
 
     const through = await currentExit();
     if (client.destroyed) return;
+    let actualRoute = through;
+    if (debugKind !== null) log(`${MEDIA_DEBUG} conexao#${debugId} tentativa ${debugExit(through)}`);
 
     // Login (autenticacao) falha fechado -- diferente do gateway, onde cair pra direto e
     // proposital. Vazar o IP real no login seria o oposto do que a setting promete.
@@ -723,11 +762,19 @@ async function serveRequest(client: Socket, request: Buffer | null) {
 
     // Descartada na hora, senao toda conexao seguinte paga o mesmo tempo de espera.
     if (upstream === null && through !== null) {
-        dropExit(through);
+        // Uma recusa do destino/porta de midia nao prova que o gateway perdeu sua saida.
+        if (!isMediaHost) dropExit(through);
+        actualRoute = null;
         upstream = isLoginHost ? null : await openDirect(target.host, target.port, RELAY_DIRECT_TIMEOUT_MS);
     }
 
-    if (upstream === null) return client.destroy();
+    if (debugKind !== null && actualRoute === null)
+        log(`${MEDIA_DEBUG} conexao#${debugId} inconclusivo: fallback DIRECT`);
+
+    if (upstream === null) {
+        if (debugKind !== null) log(`${MEDIA_DEBUG} conexao#${debugId} falhou: nenhum transporte estabelecido`);
+        return client.destroy();
+    }
 
     if (client.destroyed) {
         upstream.destroy();
@@ -738,21 +785,37 @@ async function serveRequest(client: Socket, request: Buffer | null) {
     client.on("close", () => upstream.destroy());
     upstream.on("close", () => client.destroy());
 
+    if (debugKind !== null) {
+        const state = { kind: debugKind, route: debugExit(actualRoute), tx: 0, rx: 0 };
+        debugConnections.set(debugId, state);
+        log(`${debugConnectionLine(debugId, state)} TCP estabelecido; nao comprova WebSocket autenticado`);
+        client.on("data", (chunk: Buffer) => { state.tx += chunk.length; });
+        upstream.on("data", (chunk: Buffer) => { state.rx += chunk.length; });
+        client.once("close", () => {
+            log(`${debugConnectionLine(debugId, state)} encerrada`);
+            debugConnections.delete(debugId);
+        });
+    }
+
     upstream.pipe(client);
     client.pipe(upstream);
 }
 
 function pacScript(socksPort: number, loginHosts: string[]) {
     const list = loginHosts.map(host => `"${host}"`).join(",");
+    if (scope === "off") return `function FindProxyForURL(url, host) { return ${JSON.stringify(fallbackRule)}; }`;
 
     // O host roteado sai pelo roteador, sem alternativa: uma vez que o Chromium marca o SOCKS
     // como ruim ele passa a usar a alternativa do PAC sem avisar. A rede de seguranca real e
     // o proprio roteador caindo pra conexao direta, nao uma regra que o Chromium decide sozinho.
     // Quem nao esta na lista mantem a regra que o sistema ja usava (proxy corporativo/PAC).
     return `var gatewayPattern = /${GATEWAY_HOST_PATTERN_SOURCE}/;\n`
+        + `var mediaPattern = /${MEDIA_HOST_PATTERN_SOURCE}/;\n`
         + `var loginHosts = [${list}];\n`
         + "function FindProxyForURL(url, host) {\n"
+        + "    host = host.toLowerCase().replace(/\\.$/, '');\n"
         + `    if (gatewayPattern.test(host)) return "SOCKS5 127.0.0.1:${socksPort}";\n`
+        + (MEDIA_CONTROL_EXPERIMENT ? `    if (mediaPattern.test(host)) return "SOCKS5 127.0.0.1:${socksPort}";\n` : "")
         + "    for (var i = 0; i < loginHosts.length; i++)\n"
         + `        if (host === loginHosts[i]) return "SOCKS5 127.0.0.1:${socksPort}";\n`
         + `    return "${fallbackRule}";\n`
@@ -762,7 +825,8 @@ function pacScript(socksPort: number, loginHosts: string[]) {
 // So para log/diagnostico -- o roteamento de verdade acontece pelo padrao dentro do pacScript.
 function routedHosts(): string[] {
     if (scope === "off") return [];
-    return scope === "login" ? ["gateway*.discord.gg", ...LOGIN_HOSTS] : ["gateway*.discord.gg"];
+    const hosts = ["gateway*.discord.gg", ...(MEDIA_CONTROL_EXPERIMENT ? ["*.discord.media (TCP experimental)"] : [])];
+    return scope === "login" ? [...hosts, ...LOGIN_HOSTS] : hosts;
 }
 
 // PAC embutido na propria URL, nao servido de um HTTP local: buscar o arquivo com a rede
@@ -794,6 +858,18 @@ async function installPac(redial: boolean) {
             // atras de uma rota que nao existe e queima a tentativa a toa.
             scope = "off";
             return false;
+        }
+
+        if (MEDIA_CONTROL_EXPERIMENT) {
+            // resolveProxy avalia o PAC; nao precisa resolver DNS/conectar este host sentinela.
+            try {
+                const mediaRoute = await session.defaultSession.resolveProxy("wss://streamfix-probe.discord.media:443");
+                const routed = mediaRoute === `SOCKS5 127.0.0.1:${socksPort}`;
+                log(`${MEDIA_DEBUG} build experimental ativa; UDP inalterado; PAC media=${routed ? "roteador local" : "nao confirmado, inconclusivo"}`);
+            } catch {
+                // Instrumentacao nao pode derrubar o roteamento funcional do gateway.
+                log(`${MEDIA_DEBUG} PAC media nao pode ser conferido; inconclusivo`);
+            }
         }
 
         // Regra nova nao muda socket que ja nasceu -- so no boot; derrubar apos o login
@@ -918,7 +994,7 @@ export async function sessionOpened(_: IpcMainInvokeEvent) {
     // Escopo encolhe pro gateway apos o login; ele continua roteado de proposito, entao uma
     // reconexao (rede oscilando) nasce pela mesma saida e a liberacao sobrevive.
     if (scope === "login") await installPacWithScope("gateway");
-    return { exit, scope };
+    return { exit, scope, mediaControlExperiment: MEDIA_CONTROL_EXPERIMENT && scope !== "off" };
 }
 
 export async function sessionClosed(_: IpcMainInvokeEvent) {
@@ -948,7 +1024,8 @@ export function getActiveProxy(_: IpcMainInvokeEvent) {
 }
 
 export function getLog(_: IpcMainInvokeEvent) {
-    return history.join("\n");
+    const active = Array.from(debugConnections, ([id, state]) => `${debugConnectionLine(id, state)} ativa`);
+    return [...history, ...active].join("\n");
 }
 
 function clearRetryWindowTimer() {

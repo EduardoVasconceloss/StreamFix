@@ -260,8 +260,9 @@ async function reportSession() {
     const generation = ++sessionGeneration;
 
     let exit: string | null = null;
+    let mediaControlExperiment = false;
     try {
-        ({ exit, scope: lastScope } = await Native.sessionOpened());
+        ({ exit, scope: lastScope, mediaControlExperiment } = await Native.sessionOpened());
     } catch (error) {
         logger.error("Failed to reach the desktop process", error);
         return;
@@ -283,7 +284,9 @@ async function reportSession() {
             // o tunel mas entregou sessao bloqueada.
             Native.sessionWorked().catch(error => logger.error("Failed to reach the desktop process", error));
 
-            showToast(exit === null
+            showToast(mediaControlExperiment
+                ? "StreamFix experiment: gateway + media control via proxy; UDP unchanged. Video still needs testing."
+                : exit === null
                 ? "Go Live is unlocked on this session, with no exit in the way."
                 : `Go Live is unlocked. Only the gateway stays on ${exit}, everything else is direct.`,
             Toasts.Type.SUCCESS);
