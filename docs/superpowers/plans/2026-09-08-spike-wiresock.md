@@ -145,15 +145,50 @@ propriedades do serviço:
 Os perfis ficam em `Profiles\`, como `.conf` em texto puro (`EncryptProfiles` está `False`), e
 o `AllowedApps` **está lá** — só não é aplicado enquanto o mestre estiver desligado.
 
-**Consequências para a fase 3**, se a hipótese se confirmar:
+### A sintaxe certa: `#@ws:` vai no `[Peer]`, não no `[Interface]`
 
-- O arquivo pertence a SYSTEM e Administradores: escrever nele **exige elevação**. É trabalho
-  do serviço auxiliar, não do plugin — e encaixa no "uma vez com admin, nunca mais".
-- Se o recurso só funcionar com valores **globais**, o StreamFix estaria mexendo numa
-  configuração de máquina, que colide com qualquer outro uso que a pessoa faça do WireSock.
-  Se os valores **por perfil** valerem, o StreamFix fica contido no próprio perfil. É a
-  diferença entre um vizinho educado e um que mexe nas coisas dos outros, e decide como o
-  desinstalador precisa se comportar.
+Resolvido deixando a interface gráfica escrever e comparando o arquivo antes e depois. O que
+ela grava:
+
+```
+[Peer]
+Endpoint = ...
+PersistentKeepalive = 25
+AllowedIPs = 0.0.0.0/0,::/0
+
+# [Peer] WireSock extensions
+#@ws:AllowedApps = Discord
+```
+
+O prefixo `#@ws:` estava certo. **O bloco é que estava errado**: no `[Interface]`, a diretiva é
+descartada silenciosamente na importação — o campo "Aplicativos no túnel" fica vazio e o túnel
+leva a máquina inteira, sem aviso nenhum. É a falha mais perigosa possível para este projeto,
+porque um teste de ponta a ponta **passa** assim: o espectador vê a tela, e a conclusão errada
+é "o filtro por aplicativo funciona", quando na verdade está rodando uma VPN de máquina
+inteira.
+
+Pegou-se isso testando o **negativo**: com o túnel ligado, conferir que um processo que *não* é
+o Discord continua saindo pelo IP brasileiro. Vale manter esse teste em qualquer verificação
+futura do túnel.
+
+**Confirmado funcionando** em 08/09/2026: túnel conectado em 793 ms, PowerShell permanecendo em
+`loc=BR`, e o log do serviço registrando `AllowedApps=Discord` no perfil ativo.
+
+**O `wiresock.config` global não foi tocado** pela edição do perfil — o que responde a dúvida
+de contenção: o StreamFix pode configurar só o próprio perfil, sem alterar configuração de
+máquina nem atrapalhar outros usos do WireSock. Deixar "Aplicar split tunneling a todos os
+perfis" desligado é parte do desenho, não detalhe.
+
+**Consequências para a fase 3:**
+
+- Os arquivos de perfil ficam em `ProgramData` e pertencem a SYSTEM e Administradores:
+  escrevê-los **exige elevação**. É trabalho do serviço auxiliar, não do plugin — e encaixa no
+  "uma vez com admin, nunca mais" da spec.
+- O perfil é um `.conf` em texto puro (`EncryptProfiles` está `False`), então gerar o arquivo é
+  simples. O que não pode faltar é o bloco certo: escrever no `[Interface]` falha em silêncio.
+- **O instalador não pode se apoiar na interface gráfica.** Foi ela quem escreveu a linha aqui,
+  mas a fase 3 precisa gerar o arquivo sozinha, e por isso o formato acima é o artefato mais
+  valioso deste spike.
 
 ## As quatro medições
 
