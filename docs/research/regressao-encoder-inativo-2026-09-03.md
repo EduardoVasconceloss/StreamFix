@@ -355,8 +355,21 @@ Momento da virada:
 14:04:14.657  [stream] Received receiver count for ssrc: 4047: 1
 ```
 
-Variável única alterada em relação às reproduções anteriores: a saída da mídia. Todo o resto
-— emissor, espectador, plugin, captura, codecs, região configurada — permaneceu igual.
+Variável alterada em relação às reproduções anteriores: a saída da mídia.
+
+> **Correção de 08/09/2026, à noite.** A frase original dizia "variável **única**", e listava o
+> espectador entre o que permaneceu igual. **Está errado.** O espectador era o WSL2, que
+> compartilha a pilha de rede do Windows: ligar a VPN mudou a saída do emissor **e a do
+> espectador**, ao mesmo tempo. Foram duas variáveis, não uma.
+>
+> Consequência: **nunca testamos um espectador brasileiro assistindo a uma transmissão
+> autorizada.** Em toda reprodução bem-sucedida, os dois lados estavam fora do Brasil. A
+> hipótese de que a verificação também olha o IP de quem assiste segue viva e não testada, e o
+> teste de 08/09 à noite — emissor tunelado, espectador brasileiro, negado — é compatível com
+> ela.
+>
+> Achado apontado pelo usuário, não pela análise. A armadilha aqui é a mesma da seção 9: o
+> ambiente de teste acoplava duas coisas que pareciam independentes.
 
 **Diagnóstico fechado:** a partir de 03/09/2026 o Discord passou a verificar a região também
 no plano de mídia, bloqueando seletivamente o vídeo do Go Live. Rotear apenas o WebSocket de
