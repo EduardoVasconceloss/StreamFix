@@ -104,8 +104,9 @@ const AMOSTRA = `(async () => {
     return r;
   };
   // Quantos assistem. E o sinal que decide se o monitor pode concluir alguma coisa:
-  // `sinkWantAsInt` fica em 100 mesmo sem ninguem, entao nao serve para isso. So a contagem
+  // sinkWantAsInt fica em 100 mesmo sem ninguem, entao nao serve para isso. So a contagem
   // e gravada -- os ids de quem assiste identificam pessoas e nao entram na fixture.
+  // Sem crase neste bloco: ele vive dentro de um template literal, e uma crase o encerraria.
   let espectadores = null;
   try {
     const ss = Vencord.Webpack.findStore("ApplicationStreamingStore");
