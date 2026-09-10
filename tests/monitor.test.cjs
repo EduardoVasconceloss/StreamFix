@@ -173,6 +173,52 @@ test("a fixture real de sem-espectador nunca dispara o monitor", () => {
     assert.equal(quebras.length, 0, `${quebras.length} falsos positivos na serie real`);
 });
 
+/** Mapeia uma linha da fixture para a entrada do monitor. Compartilhado pelos casos reais. */
+function daFixture(nome, espectadoresForcados) {
+    const caminho = resolve(__dirname, `fixtures/${nome}.jsonl`);
+    return readFileSync(caminho, "utf8").trim().split("\n").map(l => JSON.parse(l))
+        .filter(l => l.t && l.dados)
+        .map(l => {
+            const stream = l.dados.find(d => d.context === "stream");
+            const video = stream?.video?.[0];
+            return {
+                t: Date.parse(l.t),
+                espectadores: espectadoresForcados ?? l.espectadores ?? 0,
+                framesEncoded: video?.framesEncoded ?? null,
+                bytesSent: video?.bytesSent ?? null,
+                capturaQuadros: quadrosCapturados(stream?.captura?.tela),
+            };
+        });
+}
+
+test("a fixture real de quebra dispara, no tempo certo e pela causa certa", () => {
+    // Gravada em 08/09/2026 com tunel WireGuard ativo e espectador brasileiro entrando: a
+    // entrega foi negada pelo servidor. Ver a secao 12c da pesquisa. Serie que o monitor
+    // nunca viu quando foi escrito -- por isso ela vale mais que as sinteticas.
+    const amostras = daFixture("quebra-entrada-espectador");
+    const estados = percorrer(amostras);
+
+    const entrada = amostras.findIndex(a => a.espectadores > 0);
+    const quebra = estados.findIndex(e => e.veredito.estado === "quebrado");
+
+    assert.ok(entrada > 0, "a fixture precisa conter a entrada de um espectador");
+    assert.ok(quebra > entrada, "a quebra nao pode ser declarada antes de haver espectador");
+
+    const atraso = amostras[quebra].t - amostras[entrada].t;
+    assert.ok(atraso >= PADROES.toleranciaMs && atraso < PADROES.toleranciaMs + 1500,
+        `declarou quebra ${atraso}ms apos a entrada; esperado ~${PADROES.toleranciaMs}ms`);
+
+    assert.equal(estados[quebra].veredito.causa, "entrega",
+        "a captura seguia produzindo, entao a causa e a entrega e nao a captura");
+});
+
+test("nenhuma amostra anterior a entrada do espectador dispara", () => {
+    const amostras = daFixture("quebra-entrada-espectador");
+    const entrada = amostras.findIndex(a => a.espectadores > 0);
+    const antes = percorrer(amostras.slice(0, entrada));
+    assert.equal(antes.filter(e => e.veredito.estado === "quebrado").length, 0);
+});
+
 test("a mesma fixture, com um espectador, seria quebra", () => {
     // Prova que a serie real nao passa por falta de sinal: o que a segura e a regra do
     // espectador. Trocado esse unico campo, o monitor conclui quebra de entrega -- a captura
