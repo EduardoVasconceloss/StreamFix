@@ -5,6 +5,28 @@ Implementa `docs/superpowers/specs/2026-09-08-tunel-momentaneo-design.md`. A spe
 
 Escopo: Windows. Diagnóstico de origem em `docs/research/regressao-encoder-inativo-2026-09-03.md`.
 
+## Estado em 09/09/2026
+
+| fase | estado |
+|---|---|
+| 0 — CI | **feita**, verde nos dois runners |
+| 1 — fixtures | 2 de 5 gravadas (`sem-espectador`, `quebra-entrada-espectador`) |
+| 2 — monitor | decisão **feita e testada**; falta a coleta no renderer e o modo simulação |
+| 3 — túnel | spike encerrado. **O componente serve; a premissa do desenho não.** |
+| 4 — provider | não iniciada |
+| 5 — orquestrador | **bloqueada** — depende do modelo de gate que caiu |
+
+**O bloqueio.** A spec supunha que mídia não brasileira no nascimento da sessão bastava. Foi
+testado com túnel de verdade e não basta: ver a seção 12c da pesquisa. A hipótese principal é
+que o IP de quem assiste também conta — e isso, se confirmado, o plugin não resolve.
+
+**O próximo passo é um teste, não código:** mesma montagem da seção 12c, com o espectador
+**fora** do Brasil. Se funcionar, o bloqueio alcança quem assiste e o projeto muda de escopo.
+Se falhar, o modelo do gate ainda é desconhecido e a investigação recomeça.
+
+O que continua valendo e pode andar em paralelo: a fase 2 (coleta e modo simulação) não depende
+do gate — ela detecta que a entrega morreu, seja qual for a causa.
+
 ## Correções à spec, apuradas ao montar o plano
 
 **1. As fixtures da seção "Testes" não existem mais.** A spec afirma que as séries temporais

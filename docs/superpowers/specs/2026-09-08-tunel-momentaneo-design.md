@@ -9,6 +9,25 @@ achados e trata só do desenho.
 
 Escopo desta spec: **Windows**. Linux e macOS ficam para specs próprias.
 
+> ## ⚠ Status: premissa central refutada em 08/09/2026
+>
+> Esta spec assume que a mídia UDP saindo de fora do Brasil, no nascimento da sessão, satisfaz
+> a verificação do Discord. **Foi testado e não satisfaz.** Com um túnel WireGuard real, split
+> tunnel por aplicativo e a mídia comprovadamente saindo de Los Angeles, a entrega foi negada
+> assim mesmo — nenhum byte de vídeo transmitido. Ver `docs/research/regressao-encoder-inativo-2026-09-03.md`,
+> seção 12c.
+>
+> A hipótese principal passou a ser que **o IP de quem assiste também é verificado**, o que o
+> plugin não tem como resolver a partir da máquina de quem transmite. Falta um teste de
+> controle para confirmar.
+>
+> **O que sobrevive:** o desenho das cinco unidades, a separação mecanismo/política, o
+> `SessionMonitor` (implementado e testado), e as decisões de privilégio, segredos e
+> instalação. **O que não sobrevive sem revisão:** os modos momentâneo e permanente, a janela
+> quente, o orçamento de recuperação — tudo que depende do modelo de gate acima.
+>
+> Não implementar as fases 3 em diante antes de rever isto.
+
 ## Premissa declarada
 
 > O Discord valida a região da mídia **apenas quando uma sessão de entrega nasce**, e
