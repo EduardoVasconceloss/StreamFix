@@ -107,6 +107,39 @@ acontece com a transmissão quando o túnel cai, não o que o kill switch faz.
 
 ## Resultados
 
+**Encerrado em 08/09/2026.** Placar:
+
+| | pergunta | resposta |
+|---|---|---|
+| **M1** | o filtro alcança a mídia UDP? | **sim** — e a mídia sai mesmo pelo túnel (o Discord passou a escolher `c-lax07` em vez de `c-gru20`) |
+| **M1** | o Discord aceita a entrega? | **não** — negada assim mesmo. Ver `docs/research/...`, seção 12c |
+| **M2** | quanto custa subir o túnel? | ~700 ms |
+| **M3** | alcança um Discord já aberto? | **sim** — o filtro pegou um processo aberto 49 min antes |
+| **M4** | a transmissão sobrevive à queda do túnel? | **não testada** — perdeu a prioridade, ver abaixo |
+
+**O componente está bom; a premissa é que estava errada.** O WireSock faz tudo o que o desenho
+pedia. O que falhou foi a suposição de que mídia não brasileira bastaria para o servidor
+autorizar a entrega. M4 deixou de ser urgente porque o modo momentâneo, que ela testaria,
+depende de um modelo do gate que acabou de cair.
+
+### Achados operacionais, para quem for implementar
+
+- **`connect` não troca de perfil se já houver conexão.** Ignora em silêncio e mantém o
+  anterior. Um `Tunnel.route()` que troque de saída precisa de `disconnect` antes, sempre.
+- **Desligar o StreamFix não derruba o roteamento dele.** `stopRouter()` fecha o servidor SOCKS
+  e as conexões da sessão do Electron, mas as conexões que o relay já abriu são sockets do
+  módulo nativo e sobrevivem. Na prática: quem desliga o plugin continua com tráfego passando
+  por um proxy de terceiro até reiniciar o Discord. **É um defeito do StreamFix, e de
+  privacidade** — merece issue própria.
+- **Tunelar a máquina inteira por uma saída gratuita é inviável na prática.** Com o perfil sem
+  filtro, a conexão do usuário ficou inutilizável (150 ms de RTT, 2,89% de perda). O filtro por
+  aplicativo não é só elegância de desenho; é o que torna a coisa usável.
+- **Sempre testar o negativo.** Com o túnel ligado, conferir que um processo que não é o alvo
+  continua saindo pelo IP local. Sem isso, um túnel de máquina inteira passa por split tunnel e
+  todo teste em cima dele mente.
+
+## Detalhamento
+
 ### M2 — respondido em 08/09/2026: ~700 ms
 
 Três ciclos medidos com `Measure-Command`, com o serviço já rodando:

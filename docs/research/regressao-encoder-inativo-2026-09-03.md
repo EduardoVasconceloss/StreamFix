@@ -444,6 +444,89 @@ No modo momentâneo a franquia e a latência do provedor deixam de importar — 
 segundos — o que torna viável qualquer VPN gratuita comum (ProtonVPN free, ilimitado) sem
 exigir VPS do usuário.
 
+## 12c. REFUTADA — mídia fora do Brasil não basta
+
+Sessão da noite de 08/09/2026, com túnel WireGuard de verdade. **Este teste derruba a
+consequência tirada do fato 5.**
+
+### Montagem
+
+Tudo o que faltava para um teste limpo, pela primeira vez junto:
+
+- **WireSock Secure Connect 3.4.8**, split tunnel por aplicativo (`#@ws:AllowedApps = Discord`),
+  saída ProtonVPN gratuita em Los Angeles.
+- **StreamFix desligado**, e o Discord reiniciado depois disso — sem roteador SOCKS, sem PAC,
+  sem proxy. Tentativas anteriores na mesma noite foram inválidas justamente por empilhar o
+  plugin com o túnel.
+- **Túnel de pé antes** de o Discord abrir, e transmissão **criada do zero** com ele ativo.
+- Cliente estável: um minuto sem reconexão de gateway antes de começar.
+- **Espectador brasileiro** (WSL2, saindo direto pelo IP residencial).
+
+### A mídia estava mesmo saindo pelos Estados Unidos
+
+Não por inferência: o Discord escolheu **`c-lax07`** como servidor de mídia, quando em toda
+sessão anterior escolhia `c-gru20`/`c-gru13`/`c-gru18`. Ele só escolhe Los Angeles se enxerga o
+cliente ali. O log do serviço confirma `AllowedApps=Discord` carregado no perfil ativo, e o
+teste negativo — um processo que não é o Discord permanecendo em `loc=BR` com o túnel ligado —
+confirma que o filtro estava restringindo de verdade.
+
+### O resultado
+
+587 amostras a cada 500 ms (`tests/fixtures/quebra-entrada-espectador.jsonl`):
+
+| momento | espectadores | `framesEncoded` | `bytesSent` | quadros capturados |
+|---|---|---|---|---|
+| 00:38:23 → 00:39:11 | 0 | 0 | 0 | 3.271 → 6.162 |
+| 00:39:12 | 0 | **1** | 0 | 6.193 |
+| 00:39:16 (entrada) | **1** | 1 | 0 | 6.408 |
+| 00:40:03 | 1 | 1 | **0** | 9.207 |
+
+**Nenhum byte de vídeo saiu da máquina.** O encoder produziu exatamente um quadro e parou —
+a mesma assinatura do fato 4, o encoder religando e sendo derrubado em menos de um segundo. A
+captura estava saudável o tempo todo: `frameRateInput` em 60, quase 6 mil quadros capturados
+durante a janela.
+
+### O que isso derruba
+
+A consequência escrita após o fato 5 — *"o gate só pode ser satisfeito com a mídia UDP vindo de
+fora do Brasil no instante em que a entrega é criada"* — **não se sustenta**. A mídia estava
+vindo de fora do Brasil, no instante da criação, e a entrega foi negada.
+
+O fato 5 em si continua válido no que ele mediu: rotear só o controle TCP não basta. O erro foi
+a inferência seguinte, de que a mídia UDP seria então a variável suficiente. Ela é, no máximo,
+necessária.
+
+Junto com a correção da seção 12, isto significa que **o modelo do gate que a spec do túnel
+momentâneo assume está errado**, e a spec precisa ser revista antes de qualquer implementação.
+
+### Hipótese principal agora: o IP de quem assiste também conta
+
+Levantada pelo usuário e compatível com todo o registro:
+
+- Em **toda** reprodução bem-sucedida, os dois lados estavam fora do Brasil — o espectador era
+  o WSL2, que compartilha a pilha de rede do Windows, então a VPN o levava junto (ver a
+  correção na seção 12).
+- Nas duas tentativas desta noite, o emissor estava fora e o espectador **no Brasil**. As duas
+  negaram.
+- A negação aconteceu no instante da entrada do espectador, que é quando o fato 4 diz que a
+  revalidação ocorre.
+
+**Ainda não testada.** O controle que decide é: mesma montagem, espectador **fora** do Brasil.
+Com o WSL2 basta trocar para um perfil sem filtro de aplicativo, que leva a máquina inteira —
+uma variável, um teste.
+
+Há um dado que puxa contra e precisa ser explicado por qualquer modelo: no fato 2, com a VPN
+desligada no meio da transmissão, a entrega continuou por 16 minutos. Se o WSL2 voltou ao IP
+brasileiro junto, um espectador brasileiro estava recebendo vídeo ali. A leitura compatível é
+que o IP do espectador só é avaliado **na entrada**, não continuamente — o que combina com os
+fatos 1, 2 e 4.
+
+### Se a hipótese se confirmar
+
+O plugin resolve o lado de quem transmite. **Não há como resolver o lado de quem assiste** a
+partir da máquina do emissor. O produto deixaria de ser "restaure seu Go Live" e passaria a ser
+algo que exige as duas pontas — o que muda o projeto, não só a implementação.
+
 ## 13. Consequências de produto
 
 O diferencial do StreamFix era não rotear a mídia: gateway pela saída, todo o resto direto,
