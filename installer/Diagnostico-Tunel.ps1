@@ -46,6 +46,47 @@ function Limpar([string] $t) {
     return ($t -replace '[A-Za-z0-9+/]{42}[A-Za-z0-9+/=]{2}', '<chave omitida>')
 }
 
+
+# O wiresock-connect-cli e um programa .NET: ele le o proprio runtimeconfig.json e carrega o
+# runtime pelo `hostfxr`. Quando essa instalacao do .NET esta quebrada, o CLI nem inicia -- o
+# Windows mostra uma caixa "Imagem Incompleta" com status 0xc0000127 (procedimento nao
+# encontrado) e nada do StreamFix funciona a partir dali.
+#
+# Nao da para detectar isso rodando o proprio CLI: a falha acontece no carregamento e abre uma
+# caixa de dialogo, que travaria o instalador esperando um clique. Entao perguntamos ao
+# `dotnet`, que usa o MESMO hostfxr -- se ele tambem nao responde, o problema esta ali.
+#
+# Devolve $null quando esta tudo bem, ou a frase do problema.
+function Test-DotNetParaWireSock($cli) {
+    $exigido = 10
+    $config = Join-Path (Split-Path -Parent $cli) 'wiresock-connect-cli.runtimeconfig.json'
+    if (Test-Path -LiteralPath $config) {
+        try {
+            $j = Get-Content -LiteralPath $config -Raw | ConvertFrom-Json
+            $v = @($j.runtimeOptions.frameworks | ForEach-Object { $_.version }) |
+                Where-Object { $_ } | Select-Object -First 1
+            if ($v -match '^(\d+)\.') { $exigido = [int] $Matches[1] }
+        } catch { }
+    }
+
+    $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
+    if (-not $dotnet) {
+        return "o WireSock precisa do .NET Desktop Runtime $exigido e nao ha .NET nenhum nesta maquina"
+    }
+
+    $saida = ''
+    try { $saida = (& dotnet --list-runtimes 2>&1 | Out-String) } catch { $saida = '' }
+
+    if (-not ($saida -match 'Microsoft\.NETCore\.App')) {
+        # `dotnet --list-runtimes` usa o mesmo hostfxr que o CLI. Ele calar e o sinal.
+        return "a instalacao do .NET desta maquina esta quebrada: nem o proprio `dotnet` consegue listar os runtimes"
+    }
+    if (-not ($saida -match "Microsoft\.WindowsDesktop\.App $exigido\.")) {
+        return "falta o .NET Desktop Runtime $exigido (o WireSock precisa dele, nao so do runtime basico)"
+    }
+    return $null
+}
+
 function Achar-Cli {
     foreach ($c in @(
         (Join-Path $env:ProgramFiles 'WireSock Secure Connect\command-line\wiresock-connect-cli.exe'),
@@ -131,6 +172,17 @@ Titulo 'o tunel'
 $cli = Achar-Cli
 if (-not $cli) {
     Ruim 'Nao achei o wiresock-connect-cli.exe. Pare por aqui: o WireSock nao esta instalado.'
+    exit 1
+}
+
+# Conferir isto ANTES de chamar o CLI: quando o .NET esta quebrado, chama-lo abre uma caixa de
+# dialogo do Windows e o diagnostico fica parado esperando um clique que ninguem vai dar.
+$problemaDotNet = Test-DotNetParaWireSock $cli
+if ($problemaDotNet) {
+    Ruim "O WireSock nao consegue nem iniciar: $problemaDotNet."
+    Nota 'Baixe o .NET Desktop Runtime x64 em https://dotnet.microsoft.com/download/dotnet/10.0'
+    Nota 'Instale por cima mesmo que ja exista: isso grava um host novo e bom.'
+    Nota 'Depois disso, rode este diagnostico de novo.'
     exit 1
 }
 

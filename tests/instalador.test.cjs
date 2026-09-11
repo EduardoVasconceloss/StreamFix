@@ -523,6 +523,41 @@ describe("instalador", () => {
         assert.ok(!/export/.test(diag), "o diagnostico nunca deve exportar o perfil");
     });
 
+    test("o .NET e conferido antes de qualquer coisa depender do CLI", () => {
+        // O wiresock-connect-cli e um programa .NET. Com a instalacao do .NET quebrada ele nem
+        // inicia: o Windows mostra "Imagem Incompleta" com status 0xc0000127 e nada funciona
+        // dali em diante. Sem esta checagem o instalador segue achando que nao ha perfil, pede
+        // convite, provisiona, e falha no import com uma mensagem que nao aponta a causa.
+        const fn = /function Get-WireSock \{[\s\S]*?\n\}/.exec(INSTALADOR)[0];
+        const check = fn.indexOf("Test-DotNetParaWireSock");
+        const uso = fn.indexOf("return $cli");
+        assert.ok(check > 0, "o instalador nao confere o .NET");
+        assert.ok(check < uso, "confere depois de ja ter devolvido o CLI");
+    });
+
+    test("o diagnostico confere o .NET antes de chamar o CLI", () => {
+        // Aqui a ordem importa por um motivo pior: chamar o CLI com o .NET quebrado abre uma
+        // CAIXA DE DIALOGO do Windows, e o diagnostico ficaria parado esperando um clique.
+        const diag = readFileSync(join(RAIZ, "installer", "Diagnostico-Tunel.ps1"), "utf8")
+            .split("\n").filter(l => !/^\s*#/.test(l)).join("\n");
+
+        const check = diag.indexOf("Test-DotNetParaWireSock $cli");
+        const primeiraChamada = diag.indexOf("& $cli list");
+        assert.ok(check > 0, "o diagnostico nao confere o .NET");
+        assert.ok(primeiraChamada > 0, "o teste nao achou a primeira chamada ao CLI");
+        assert.ok(check < primeiraChamada, "chama o CLI antes de conferir: pode travar num dialogo");
+    });
+
+    test("a checagem do .NET sabe dizer o que instalar", () => {
+        // Uma mensagem que so diz "erro no .NET" manda a pessoa para o Google. O nome exato do
+        // pacote e o link resolvem sozinhos.
+        for (const arquivo of ["StreamFix-Installer.ps1", "Diagnostico-Tunel.ps1"]) {
+            const fonte = readFileSync(join(RAIZ, "installer", arquivo), "utf8");
+            assert.match(fonte, /Desktop Runtime/, `${arquivo} nao diz qual pacote instalar`);
+            assert.match(fonte, /dotnet\.microsoft\.com\/download/, `${arquivo} nao diz onde baixar`);
+        }
+    });
+
     test("o instalador nao se auto-eleva", () => {
         // Medido em 11/09: o CLI do WireSock (list, status, import, delete, connect) funciona
         // sem elevacao. A unica coisa que precisa e a instalacao do WireSock, e quem levanta o
