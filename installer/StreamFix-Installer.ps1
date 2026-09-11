@@ -723,7 +723,14 @@ function Invoke-Install($root) {
     Write-Host ''
     Write-Ok 'Pronto. O plugin ja vem ativado, nao precisa mexer em nada.'
     Write-Host "  Sua saida: $($tunnel.endpoint)" -ForegroundColor DarkGray
-    Write-Host '  Entre numa call e use Go Live ou a camera.' -ForegroundColor DarkGray
+
+    if ($tunnel.conectado) {
+        Write-Host '  Entre numa call e use Go Live ou a camera.' -ForegroundColor DarkGray
+    } else {
+        Write-Warn 'O tunel nao subiu antes de o Discord abrir.'
+        Write-Host '  Feche o Discord DE VERDADE (bandeja, botao direito, Sair) e abra de novo.' -ForegroundColor DarkGray
+        Write-Host '  Sem isso o Discord segue enxergando o IP brasileiro e esconde o botao de transmitir.' -ForegroundColor DarkGray
+    }
 
     if (-not $permanent) {
         if ($weInjected) {
@@ -1176,6 +1183,50 @@ function Import-TunnelProfile($cli, $confPath, $profile) {
     }
 }
 
+# Sobe o tunel, e confere que subiu.
+#
+# **Isto existe por um bug de verdade, nao por completude.** Sem conectar aqui, o instalador
+# terminava, abria o Discord, e so entao o plugin subia o tunel -- tarde demais. O WebSocket de
+# gateway ja tinha nascido pelo IP brasileiro, e o WireSock captura conexao NOVA, nao a que ja
+# existe. A sessao inteira nascia marcada como brasileira, o cliente engatava a propria trava e
+# desabilitava o botao de transmitir. Como o botao nem chama a funcao que o plugin intercepta,
+# o porteiro nunca era consultado: a pessoa via o aviso do Discord e nada explicava o porque.
+#
+# Nao aparece para quem ja usava: o WireSock e um servico, entao o tunel dessas pessoas ja
+# estava de pe muito antes de o Discord abrir. So quem instala do zero cai nisso -- ou seja,
+# exatamente todo mundo que recebe um convite.
+#
+# Falhar aqui NAO derruba a instalacao: o plugin tenta subir sozinho no `start()`. O que muda e
+# que a pessoa e avisada de que precisa reabrir o Discord, em vez de descobrir pelo botao cinza.
+function Connect-Tunnel($cli, $profile) {
+    Write-Step "Subindo o tunel no perfil $profile"
+
+    try {
+        # -exit devolve o controle assim que conecta. Com prazo porque, quando o aperto de mao
+        # nao fecha, ele fica pendurado para sempre -- medido na fase 3.
+        $p = Start-Process -FilePath $cli -ArgumentList 'connect', $profile, '-log-level', 'error', '-exit' `
+            -PassThru -NoNewWindow
+        if (-not $p.WaitForExit(20000)) {
+            try { $p.Kill() } catch { }
+            Write-Warn 'O WireSock demorou demais para conectar.'
+            return $false
+        }
+    } catch {
+        Write-Warn "Nao consegui subir o tunel: $($_.Exception.Message)"
+        return $false
+    }
+
+    # Quem diz se subiu e o status, nao o codigo de saida.
+    $status = (& $cli status 2>&1 | Out-String)
+    if ($status -match [regex]::Escape($profile)) {
+        Write-Ok 'Tunel de pe.'
+        return $true
+    }
+
+    Write-Warn 'O WireSock nao confirmou a conexao.'
+    return $false
+}
+
 # Monta o tunel inteiro. Roda ANTES de o plugin ser copiado e ativado: se qualquer coisa aqui
 # falhar, a pessoa fica sem plugin em vez de ficar com um plugin ligado e sem tunel -- que e o
 # pior estado possivel, porque parece pronto.
@@ -1192,6 +1243,14 @@ function Install-Tunnel($url, $exitKey, $profile) {
         if ($existente) {
             Write-Ok "Tunel ja configurado no perfil $profile (saida $($existente.endpoint))"
             Write-Host '  Nao pedi convite nem gerei chave nova. Para refazer do zero: -Reprovision' -ForegroundColor DarkGray
+
+            # Configurado nao quer dizer de pe. Se estiver fora, o Discord abriria pelo Brasil.
+            $status = (& $cli status 2>&1 | Out-String)
+            if ($status -notmatch [regex]::Escape($profile)) {
+                $existente | Add-Member -NotePropertyName conectado -NotePropertyValue (Connect-Tunnel $cli $profile) -Force
+            } else {
+                $existente | Add-Member -NotePropertyName conectado -NotePropertyValue $true -Force
+            }
             return $existente
         }
     }
@@ -1208,6 +1267,9 @@ function Install-Tunnel($url, $exitKey, $profile) {
 
         Write-Ok "Tunel pronto: $($result.endereco) pela saida $($result.endpoint)"
         Write-Host "  MTU medido: caminho $($result.mtuDoCaminho), tunel $($result.mtuDoTunel)" -ForegroundColor DarkGray
+
+        # Antes de o Discord abrir, senao o gateway dele nasce pelo Brasil. Ver Connect-Tunnel.
+        $result | Add-Member -NotePropertyName conectado -NotePropertyValue (Connect-Tunnel $cli $result.perfil) -Force
         return $result
     } finally {
         Remove-Item -LiteralPath $confPath -Force -ErrorAction SilentlyContinue

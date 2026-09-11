@@ -277,6 +277,41 @@ describe("instalador", () => {
         assert.ok(build < config, "ativar o plugin e o ultimo passo");
     });
 
+    test("o tunel sobe ANTES de o Discord abrir", () => {
+        // O bug que isto guarda: o instalador importava o perfil e nunca conectava. O Discord
+        // abria, o WebSocket de gateway nascia pelo IP brasileiro, e so entao o plugin subia o
+        // tunel -- tarde demais, porque o WireSock captura conexao nova e nao a que ja existe.
+        // A sessao inteira nascia marcada como brasileira e o cliente escondia o botao de
+        // transmitir. Como o botao nem chama a funcao que o plugin intercepta, o porteiro nunca
+        // era consultado e nada explicava o porque.
+        const fluxo = /function Invoke-Install\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
+        const tunnel = /function Install-Tunnel\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
+
+        assert.match(tunnel, /Connect-Tunnel/, "Install-Tunnel nao sobe o tunel");
+        assert.ok(fluxo.indexOf("Install-Tunnel") < fluxo.indexOf("Start-Discord"),
+            "o tunel tem que subir antes de o Discord abrir");
+    });
+
+    test("conectar tem prazo: sem ele o instalador fica pendurado para sempre", () => {
+        // Medido na fase 3: `connect -exit` nunca volta quando o aperto de mao nao fecha.
+        const fn = /function Connect-Tunnel\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
+        assert.match(fn, /WaitForExit\(\d+\)/, "falta o prazo");
+        assert.match(fn, /\.Kill\(\)/, "no estouro do prazo o processo tem que morrer");
+        // Quem decide se subiu e o status, nao o codigo de saida do connect.
+        assert.match(fn, /status/, "precisa confirmar pelo status");
+    });
+
+    test("falhar ao subir o tunel nao derruba a instalacao, mas avisa", () => {
+        // O plugin tenta subir sozinho no start(). O que nao pode e a pessoa achar que esta
+        // pronto e descobrir pelo botao cinza.
+        const fn = /function Connect-Tunnel\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
+        assert.ok(!/throw/.test(fn), "Connect-Tunnel nao pode derrubar a instalacao");
+
+        const fluxo = /function Invoke-Install\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
+        assert.match(fluxo, /\$tunnel\.conectado/, "o fim da instalacao ignora se o tunel subiu");
+        assert.match(fluxo, /bandeja/i, "o aviso precisa dizer como reabrir o Discord de verdade");
+    });
+
     test("o toolchain vem antes do tunel: o provisionador roda em Node", () => {
         const fluxo = /function Invoke-Install\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
         assert.ok(fluxo.indexOf("Install-Toolchain") < fluxo.indexOf("Install-Tunnel"));
