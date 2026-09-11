@@ -446,6 +446,8 @@ exigir VPS do usuário.
 
 ## 12c. REFUTADA — mídia fora do Brasil não basta
 
+> A hipótese levantada no fim desta seção foi **confirmada** em 11/09/2026. Ver a seção 12d.
+
 Sessão da noite de 08/09/2026, com túnel WireGuard de verdade. **Este teste derruba a
 consequência tirada do fato 5.**
 
@@ -511,9 +513,8 @@ Levantada pelo usuário e compatível com todo o registro:
 - A negação aconteceu no instante da entrada do espectador, que é quando o fato 4 diz que a
   revalidação ocorre.
 
-**Ainda não testada.** O controle que decide é: mesma montagem, espectador **fora** do Brasil.
-Com o WSL2 basta trocar para um perfil sem filtro de aplicativo, que leva a máquina inteira —
-uma variável, um teste.
+**Confirmada em 11/09/2026.** O controle foi feito com o espectador **fora** do Brasil, por
+uma saída própria em Santiago, e a entrega funcionou. Ver a seção 12d.
 
 Há um dado que puxa contra e precisa ser explicado por qualquer modelo: no fato 2, com a VPN
 desligada no meio da transmissão, a entrega continuou por 16 minutos. Se o WSL2 voltou ao IP
@@ -521,11 +522,121 @@ brasileiro junto, um espectador brasileiro estava recebendo vídeo ali. A leitur
 que o IP do espectador só é avaliado **na entrada**, não continuamente — o que combina com os
 fatos 1, 2 e 4.
 
-### Se a hipótese se confirmar
+### O que a confirmação significa
 
 O plugin resolve o lado de quem transmite. **Não há como resolver o lado de quem assiste** a
 partir da máquina do emissor. O produto deixaria de ser "restaure seu Go Live" e passaria a ser
 algo que exige as duas pontas — o que muda o projeto, não só a implementação.
+
+## 12d. CONFIRMADA — o IP de quem assiste também conta
+
+Sessão da madrugada de 11/09/2026, com saída própria: VPS Oracle Always Free em Santiago
+(`sa-santiago-1`, VM.Standard.A1.Flex), WireGuard nas duas pontas. **Este teste é o controle
+que faltava em 12c.**
+
+### Montagem
+
+Mudou uma coisa em relação a 12c: o espectador também sai do Brasil.
+
+- **Emissor**: Windows, WireSock com `#@ws:AllowedApps = Discord`, peer em `wg0` (UDP 39743).
+- **Espectador**: WSL2, `wg-quick` rodando **dentro** do WSL2, peer em `wg1` (UDP 51413).
+  Namespace de rede próprio: é o que separa as duas pontas de verdade. Em 12c o WSL2
+  compartilhava a pilha do Windows, e foi isso que acoplou as variáveis (ver a correção na
+  seção 12).
+- **StreamFix desligado nos dois lados.** Ver a ressalva abaixo: em 12c ele estava ligado no
+  espectador.
+- Túnel de pé antes, transmissão criada do zero, cliente estável.
+
+### O resultado
+
+1.771 amostras a cada 500 ms (`tests/fixtures/saudavel-longa.jsonl`):
+
+| amostra | horário | espectadores | `framesEncoded` | `bytesSent` |
+|---|---|---|---|---|
+| 281 | 01:27:14 | 0 | — | — (transmissão criada) |
+| 283 | 01:27:15 | 0 | 0 | 0 (contexto `stream` nasce) |
+| 302 | 01:27:25 | **1** (entrada) | 255 | 565.630 |
+| 353 | 01:27:50 | 1 | 1.804 | 6.544.316 |
+| 1689 | 01:39:10 | **0** (saída) | 0 | 0 |
+| 1700 | 01:39:15 | **1** (volta) | 261 | 708.717 |
+
+A entrega sobreviveu a **duas** revalidações de entrada de espectador, que é o instante em que
+o fato 4 diz que o gate reavalia e onde 12c morreu. Sessenta quadros por segundo do início ao
+fim, sem uma parada.
+
+### O que isso estabelece
+
+A hipótese levantada pelo usuário em 12c está **confirmada**: o gate avalia o IP de quem
+assiste, não só o de quem transmite. Mesma montagem, mesma máquina, mesmo servidor — trocando
+apenas a saída do espectador, a entrega passa de negada a saudável.
+
+**Consequência de produto, e ela é grande:** não há como resolver isto a partir da máquina de
+quem transmite. O StreamFix deixa de ser "restaure seu Go Live" e passa a exigir as duas
+pontas. Quem assiste também precisa estar fora do Brasil no momento em que entra.
+
+### Latência: não há trombone
+
+Com IP chileno, o Discord escolheu servidor de mídia perto da saída nos dois contextos:
+
+| contexto | ping | `localAddress` |
+|---|---|---|
+| `default` (voz) | 81 ms | `159.112.151.37` |
+| `stream` (vídeo) | 80 ms | `159.112.151.37` |
+
+Nada dos 249 ms que a VPN nos EUA com servidor no Brasil produziu. O custo do túnel permanente
+é **~80 ms contra os 35 ms diretos**, para a call inteira — que é o que o refinamento de voz
+direta (`voiceRegion` no Brasil, `AllowedIPs` restrito à faixa da transmissão) atacaria.
+
+### Duas ressalvas honestas
+
+**Mudaram duas coisas entre 12c e hoje, não uma.** O espectador de hoje também está com o
+StreamFix desligado, e o de 12c quase certamente não estava — naquela noite o plugin foi
+desligado no Windows, ninguém mexeu no Equicord do WSL2, e ele foi encontrado ligado em
+11/09. Isso não derruba a conclusão; aperta. Em 12c o espectador tinha o gateway roteado para
+fora do Brasil pela proxy do plugin e **mesmo assim** foi negado — ou seja, o que conta é o IP
+da **mídia** de quem assiste, não o do controle dele.
+
+**O conserto de MTU não explica 12c.** MTU errado descarta pacote depois de enviado, e lá o
+`bytesSent` era zero: o cliente nunca chegou a mandar.
+
+### Achados operacionais do caminho
+
+Três, e os três eram falhas silenciosas — o modo de falha mais caro neste projeto.
+
+**1. O WireSock rouba o tráfego de volta de um WireGuard no mesmo endpoint.** Com os dois
+túneis apontando para o mesmo `IP:porta`, o filtro NDIS do Windows captura o UDP de resposta e
+o entrega ao próprio túnel. O WSL2 mantinha handshake e continuava transmitindo — só parava de
+receber, `rx` congelado em 16.432 enquanto `tx` subia. Confirmado por variável única:
+desconectar o túnel do Windows fez o `rx` pular para 59.552 no mesmo instante. **Resolvido
+dando interface e porta próprias a cada ponta.** Sem isso o teste teria rodado com o espectador
+sem rede, e o resultado seria lido como negação.
+
+**2. O link residencial é PPPoE, MTU 1492, não 1500.** Medido com `ping -f -l`. O perfil estava
+com `MTU = 1420`, que assume 1500; o valor certo é **1412**. Oito bytes bastam para descartar
+pacote cheio de vídeo sem aviso.
+
+**3. O WSL2 paga MTU duas vezes.** O WireSock encapsula o UDP do WireGuard do WSL2, então são
+dois cabeçalhos de 80 bytes. Com `MTU = 1420` lá dentro, nenhum handshake TLS completava — HTTP
+simples funcionava, TCP na 443 conectava, e o TLS morria. **É a causa da tela de carregamento
+travada do Discord do WSL2 na noite de 08/09**, que na ocasião foi atribuída a falha de
+composição do WSLg. Com `MTU = 1160` o Discord carrega normalmente.
+
+### Um defeito do SessionMonitor, achado por esta série
+
+`ApplicationStreamingStore.getViewerIds()` **atrasa cerca de cinco segundos**. Quando o último
+espectador sai, os contadores de saída zeram no mesmo instante, mas a store só reporta zero
+5,1 s depois; na volta, a entrega retoma 3,8 s antes de a store contar 1.
+
+A tolerância do monitor era de 4 s. Ou seja: o sinal em que a regra do espectador se apoia
+chega **depois** do prazo que a regra de conclusão usa. Na amostra 1688 desta fixture o monitor
+declarou `quebrado` — falso positivo — cinco segundos antes de a store admitir que não havia
+mais ninguém assistindo. No produto isso significaria recriar a transmissão de quem não tem
+problema nenhum, toda vez que um espectador sai.
+
+Corrigido com uma folga **limitada** (`atrasoEspectadorMs`, 8 s) aplicada só depois que os
+contadores zeram. Desarmar o relógio até a entrega voltar seria mais simples e estaria errado:
+mascararia negação de verdade — na fixture `sem-espectador` os contadores zeram e nunca mais
+andam, e o monitor precisa continuar concluindo ali.
 
 ## 13. Consequências de produto
 
