@@ -8,6 +8,27 @@ Diagnóstico de origem em `docs/research/regressao-encoder-inativo-2026-09-03.md
 
 ---
 
+## Estado
+
+| fase | estado |
+|---|---|
+| 0 — remover a proxy | **feita** em 11/09 |
+| 1 — coletor | não iniciada |
+| 2 — perfil | não iniciada |
+| 3 — controle | não iniciada |
+| 4 — provisionamento | não iniciada |
+| 5 — porteiro | não iniciada (gancho investigado) |
+| 6 — assistir | não iniciada (gancho investigado) |
+| 7 — instalador | não iniciada |
+| 8 — entrega | não iniciada |
+
+**Pendência da fase 0:** a verificação de tipos completa não foi feita. Ela exige compilar
+dentro de um checkout do mod, e o checkout desta máquina é o que o Discord do usuário carrega —
+copiar para lá troca o plugin instalado. O que foi verificado: sintaxe por esbuild nos dois
+arquivos, nenhuma referência pendente ao que saiu, nenhum import sobrando, e a suíte verde.
+
+---
+
 ## O que já existe e entra de graça
 
 | | estado |
