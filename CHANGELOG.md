@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.0.0...v2.0.1) (2026-09-11)
+
+
+### Bug Fixes
+
+* o provisionamento estourava no PowerShell 5.1 ([ba85116](https://github.com/EduardoVasconceloss/StreamFix/commit/ba8511686cc2fa5d915dadb717a752609a87a3dc))
+
 ## [2.0.0](https://github.com/EduardoVasconceloss/StreamFix/compare/v1.2.2...v2.0.0) (2026-09-11)
 
 
