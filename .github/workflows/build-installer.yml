@@ -93,6 +93,9 @@ jobs:
             "installer/StreamFix-Installer-GUI.ps1"
             "installer/StreamFix-Installer.bat"
             "installer/streamfix-installer.sh"
+            "installer/Verifica-Tunel.ps1"
+            "installer/Diagnostico-Tunel.ps1"
+            "installer/Diagnostico-Tunel.bat"
           )
           $files | ForEach-Object {
             "$((Get-FileHash $_ -Algorithm SHA256).Hash)  $(Split-Path -Leaf $_)"
@@ -109,6 +112,9 @@ jobs:
             installer/StreamFix-Installer-GUI.ps1
             installer/StreamFix-Installer.bat
             installer/streamfix-installer.sh
+            installer/Verifica-Tunel.ps1
+            installer/Diagnostico-Tunel.ps1
+            installer/Diagnostico-Tunel.bat
             installer/SHA256SUMS.txt
 
       - name: Attach to release
@@ -127,5 +133,8 @@ jobs:
             installer/StreamFix-Installer-GUI.ps1 \
             installer/StreamFix-Installer.bat \
             installer/streamfix-installer.sh \
+            installer/Verifica-Tunel.ps1 \
+            installer/Diagnostico-Tunel.ps1 \
+            installer/Diagnostico-Tunel.bat \
             installer/SHA256SUMS.txt \
             --clobber

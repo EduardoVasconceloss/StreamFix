@@ -4,8 +4,13 @@
     Para quando o tunel esta "conectado" e mesmo assim nada funciona.
 
     Uso:
-      .\Diagnostico-Tunel.ps1
-      .\Diagnostico-Tunel.ps1 -SemReconectar    (nao derruba o tunel para testar)
+      Diagnostico-Tunel.bat                      (dois cliques -- o jeito recomendado)
+
+    Rodar o .ps1 direto so funciona se a politica de execucao da maquina permitir; no padrao
+    do Windows ele falha com "nao esta assinado digitalmente". Se voce nao tiver o .bat:
+
+      powershell -ExecutionPolicy Bypass -File .\Diagnostico-Tunel.ps1
+      powershell -ExecutionPolicy Bypass -File .\Diagnostico-Tunel.ps1 -SemReconectar
 
     Ele imprime um relatorio para voce colar. **Nao contem token, senha nem chave privada** --
     qualquer coisa com cara de chave e substituida antes de aparecer.

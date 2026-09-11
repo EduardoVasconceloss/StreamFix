@@ -127,6 +127,16 @@ Ele confere que um processo que **não** é o Discord continua saindo pelo seu I
 
 **"A saída aceitou você mas não conseguiu ligar o WireGuard."** Problema do lado da saída, não seu. Avise quem a opera.
 
+**O túnel diz "conectado" e mesmo assim nada funciona.** É o caso mais confuso, e tem ferramenta própria — dois cliques no `Diagnostico-Tunel.bat`:
+
+```powershell
+Diagnostico-Tunel.bat
+```
+
+Ele confere de uma vez a camada que intercepta (os serviços e o driver do WireSock), qual Discord está rodando, o que o WireSock de fato aceitou no túnel, e por onde sai um processo que não é o Discord. As duas causas já vistas para esse sintoma são o driver do WireSock precisar de um **reinício do computador** para valer, e o túnel ter sido montado para um cliente diferente do que você usa.
+
+> Rode pelo `.bat`. O `.ps1` direto falha com *"não está assinado digitalmente"* na maioria das máquinas — o `.bat` contorna isso só para aquele processo, sem mudar nada no seu Windows.
+
 Para qualquer outra coisa: `/streamfix` copia um diagnóstico completo para você colar. **Ele não contém token nem chave privada.**
 
 ---
@@ -206,6 +216,8 @@ installer/
 ├── StreamFix-Installer.ps1        # Windows: terminal
 ├── StreamFix-Installer-GUI.ps1    # Windows: janela
 ├── Verifica-Tunel.ps1             # confere que o túnel leva só o Discord
+├── Diagnostico-Tunel.ps1          # por que o túnel está de pé e nada passa por ele
+├── Diagnostico-Tunel.bat          # o mesmo, com dois cliques
 ├── provisiona.mjs                 # mede MTU, gera chave, troca o convite, escreve o perfil
 └── streamfix-installer.sh         # Linux: recusa, por enquanto
 ```
