@@ -4,6 +4,11 @@ name: Testar plugin
 # nao guardava nada: uma regressao no roteamento ou na escolha de saida passaria pela revisao
 # sem nada ficar vermelho. Roda tambem em push porque neste repo os commits vao direto pra
 # main; so em pull_request deixaria justamente o caminho mais usado sem cobertura.
+#
+# `provisionamento/` e `installer/` estao na lista porque a suite passou a testa-los: os testes
+# de convite carregam `registro.ts`, e os do instalador leem o `.ps1` e rodam o `provisiona.mjs`.
+# Sem eles aqui, mexer nesses diretorios nao acenderia nada -- que e o mesmo buraco descrito
+# acima, so que um nivel adiante.
 
 on:
   push:
@@ -12,12 +17,16 @@ on:
     paths:
       - "streamFix/**"
       - "tests/**"
+      - "provisionamento/**"
+      - "installer/**"
       - ".github/workflows/test-plugin.yml"
   pull_request:
     # Repetido em vez de reaproveitado: o parser de workflow do GitHub nao resolve ancora YAML.
     paths:
       - "streamFix/**"
       - "tests/**"
+      - "provisionamento/**"
+      - "installer/**"
       - ".github/workflows/test-plugin.yml"
 
 jobs:
