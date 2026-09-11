@@ -220,10 +220,28 @@ export function controleWireSock(opcoes: OpcoesControle): Controle & {
             return { ok: false, motivo: `falha ao executar o WireSock: ${(e as Error)?.message ?? e}` };
         }
 
-        // Sem nenhuma linha de log, o CLI nem chegou a tentar -- e o que acontece com perfil
-        // inexistente, que ele reporta com frase traduzida e codigo de saida 0. Distinguir isto
-        // do caso perigoso importa: um e "nao conectou", o outro e "conectou errado".
+        // Sem nenhuma linha de log, o CLI nem chegou a tentar. Isso acontece em DOIS casos, e
+        // eles pedem respostas opostas:
+        //
+        //   - perfil inexistente: ele recusa com frase traduzida e codigo de saida 0;
+        //   - tunel ja de pe: ele responde "outra conexao ja esta em andamento", tambem
+        //     traduzido e tambem sem log.
+        //
+        // O texto nao serve para distinguir -- e traduzido, e casar com ele daria resultado
+        // diferente em cada idioma. O estado serve.
+        //
+        // Tratar os dois como erro foi o que aconteceu ate 11/09: a primeira abertura do Discord
+        // depois de instalar reclamava "o WireSock nao chegou a conectar" com o tunel de pe e
+        // funcionando. Alarme falso ensina a pessoa a ignorar o aviso -- que e pior do que nao
+        // avisar.
         if (mensagensDoLog(log).length === 0) {
+            if (await estado(perfil) === "conectado") {
+                // **Sem o log, nao da para conferir o split tunnel nesta chamada.** Quem subiu
+                // o tunel e que tinha de conferir; o instalador confere. Nao ha comando no CLI
+                // que mostre os aplicativos de uma conexao ja ativa -- so o `connect` os
+                // reporta. Quem quiser a prova de fora roda o Verifica-Tunel.ps1.
+                return { ok: true, saida: await lerSaida() };
+            }
             return { ok: false, motivo: `o WireSock nao chegou a conectar no perfil ${perfil}` };
         }
 
@@ -250,9 +268,17 @@ export function controleWireSock(opcoes: OpcoesControle): Controle & {
             return { ok: false, motivo: `o WireSock nao ficou conectado no perfil ${perfil}` };
         }
 
-        // A consulta de geo do CLI demora: logo apos conectar, o `status` mostra o endereco
-        // externo vazio. Medido em 11/09. Nao e motivo para falhar -- a verificacao que vale e a
-        // do `localAddress` do proprio Discord, na fase 5.
+        return { ok: true, saida: await lerSaida() };
+    }
+
+    /**
+     * O endereco externo que o CLI reporta, com algumas tentativas.
+     *
+     * A consulta de geo dele demora: logo apos conectar, o `status` mostra o endereco externo
+     * vazio. Medido em 11/09. Nao e motivo para falhar -- a verificacao que vale e a do
+     * `localAddress` do proprio Discord, na fase 5.
+     */
+    async function lerSaida(): Promise<string> {
         let saida = "";
         for (let i = 0; i < tentativas && saida === ""; i++) {
             if (i > 0) await dormir(500);
@@ -262,7 +288,7 @@ export function controleWireSock(opcoes: OpcoesControle): Controle & {
                 break;
             }
         }
-        return { ok: true, saida };
+        return saida;
     }
 
     return { subir, derrubar, estado, importar };

@@ -1201,30 +1201,66 @@ function Import-TunnelProfile($cli, $confPath, $profile) {
 function Connect-Tunnel($cli, $profile) {
     Write-Step "Subindo o tunel no perfil $profile"
 
+    $saidaLog = Join-Path $env:TEMP "streamfix-connect-$([guid]::NewGuid().ToString('N').Substring(0,8)).log"
+    $erroLog = "$saidaLog.err"
+    $log = ''
+
     try {
-        # -exit devolve o controle assim que conecta. Com prazo porque, quando o aperto de mao
-        # nao fecha, ele fica pendurado para sempre -- medido na fase 3.
-        $p = Start-Process -FilePath $cli -ArgumentList 'connect', $profile, '-log-level', 'error', '-exit' `
-            -PassThru -NoNewWindow
+        # -log-level info porque o log e a UNICA coisa que diz quais aplicativos entraram no
+        # tunel; ver a conferencia logo abaixo. -exit devolve o controle assim que conecta, e o
+        # prazo existe porque, quando o aperto de mao nao fecha, ele fica pendurado para sempre
+        # -- medido na fase 3.
+        $p = Start-Process -FilePath $cli `
+            -ArgumentList 'connect', $profile, '-log-level', 'info', '-exit' `
+            -PassThru -NoNewWindow -RedirectStandardOutput $saidaLog -RedirectStandardError $erroLog
         if (-not $p.WaitForExit(20000)) {
             try { $p.Kill() } catch { }
             Write-Warn 'O WireSock demorou demais para conectar.'
             return $false
         }
+        foreach ($f in @($saidaLog, $erroLog)) {
+            if (Test-Path -LiteralPath $f) { $log += (Get-Content -LiteralPath $f -Raw -ErrorAction SilentlyContinue) }
+        }
     } catch {
         Write-Warn "Nao consegui subir o tunel: $($_.Exception.Message)"
         return $false
+    } finally {
+        Remove-Item -LiteralPath $saidaLog, $erroLog -Force -ErrorAction SilentlyContinue
     }
 
     # Quem diz se subiu e o status, nao o codigo de saida.
     $status = (& $cli status 2>&1 | Out-String)
-    if ($status -match [regex]::Escape($profile)) {
-        Write-Ok 'Tunel de pe.'
+    if ($status -notmatch [regex]::Escape($profile)) {
+        Write-Warn 'O WireSock nao confirmou a conexao.'
+        return $false
+    }
+
+    # **A conferencia que justifica capturar o log.** O `#@ws:AllowedApps` pode ser descartado
+    # em silencio, e ai o tunel leva a MAQUINA INTEIRA em vez de so o Discord -- tudo continua
+    # parecendo funcionar. O log do connect diz quais aplicativos valeram, e e a unica chance de
+    # saber: nenhum comando do CLI mostra isso depois, e o plugin, que confia num tunel que ja
+    # encontrou de pe, depende desta conferencia ter acontecido aqui.
+    #
+    # A leitura rigorosa (JSON, linha a linha) vive em streamFix/tunnel/controle.ts, com teste.
+    # Aqui basta pegar o caso catastrofico: nenhum split tunnel declarado.
+    if ($log -match 'AllowedApps') {
+        if ($log -notmatch 'AllowedApps[^\r\n]*Discord') {
+            & $cli disconnect 2>&1 | Out-Null
+            Write-Err 'O tunel subiu sem restringir ao Discord, entao eu o derrubei.'
+            Write-Host '  Deixa-lo de pe mandaria TODO o seu trafego para a saida, nao so o Discord.' -ForegroundColor DarkGray
+            return $false
+        }
+        Write-Ok 'Tunel de pe, levando so o Discord.'
         return $true
     }
 
-    Write-Warn 'O WireSock nao confirmou a conexao.'
-    return $false
+    # Sem log nenhum: o tunel ja estava de pe antes (o CLI recusa uma segunda conexao sem
+    # emitir log). Nao da para conferir o split tunnel desta vez, e mentir dizendo que conferiu
+    # seria pior do que dizer a verdade.
+    Write-Ok 'Tunel de pe.'
+    Write-Host '  Ele ja estava conectado, entao nao deu para conferir aqui se leva so o Discord.' -ForegroundColor DarkGray
+    Write-Host '  Para conferir: .\Verifica-Tunel.ps1' -ForegroundColor DarkGray
+    return $true
 }
 
 # Monta o tunel inteiro. Roda ANTES de o plugin ser copiado e ativado: se qualquer coisa aqui

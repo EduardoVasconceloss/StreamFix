@@ -166,6 +166,33 @@ test("perfil inexistente e 'nao conectou', nao 'conectou errado'", async () => {
     assert.doesNotMatch(r.motivo, /maquina inteira/);
 });
 
+test("tunel ja de pe nao e erro -- e o estado que distingue, nao o texto", async () => {
+    // Medido em 11/09, com o tunel de pe: o CLI responde exatamente isto, sem nenhuma linha de
+    // log JSON. E a MESMA ausencia de log do perfil inexistente logo acima, entao o texto nao
+    // serve para separar os dois -- ele e traduzido. O estado serve.
+    //
+    // Tratar este caso como erro fazia a primeira abertura do Discord depois de instalar
+    // reclamar "o WireSock nao chegou a conectar" com o tunel funcionando. Alarme falso ensina
+    // a pessoa a ignorar o aviso, que e pior do que nao avisar.
+    const jaConectado = "Conectando a streamfix-santiago\nOutra conexão já está em andamento.\n";
+    const { c, chamadas } = controleDe({ connect: jaConectado, status: STATUS_CONECTADO });
+
+    const r = await c.subir(PERFIL);
+    assert.equal(r.ok, true);
+    assert.equal(r.saida, "159.112.151.37");
+    assert.ok(!chamadas.some(a => a[0] === "disconnect"), "nao pode derrubar um tunel que esta bom");
+});
+
+test("sem log e sem conexao continua sendo erro", async () => {
+    // A outra metade do par: se o estado nao confirma, a ausencia de log volta a ser falha.
+    const jaConectado = "Conectando a streamfix-santiago\nOutra conexão já está em andamento.\n";
+    const { c } = controleDe({ connect: jaConectado, status: STATUS_FORA, disconnect: "" });
+
+    const r = await c.subir(PERFIL);
+    assert.equal(r.ok, false);
+    assert.match(r.motivo, /nao chegou a conectar/);
+});
+
 test("CLI ausente vira motivo, nao excecao", async () => {
     const { c } = controleDe({ connect: new Error("ENOENT") });
     const r = await c.subir(PERFIL);

@@ -301,6 +301,25 @@ describe("instalador", () => {
         assert.match(fn, /status/, "precisa confirmar pelo status");
     });
 
+    test("quem sobe o tunel confere que ele leva so o Discord", () => {
+        // O plugin passou a aceitar um tunel que ja encontrou de pe, porque nenhum comando do
+        // CLI mostra o split tunnel de uma conexao ativa -- so o `connect` o reporta, no log.
+        // Isso so e seguro se quem subiu tiver conferido, e quem sobe para o Discord abrir e
+        // esta funcao. Sem a conferencia aqui, a defesa contra "o tunel levou a maquina
+        // inteira" desaparece para todo mundo que instala do zero.
+        const fn = /function Connect-Tunnel\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
+
+        assert.match(fn, /-log-level', 'info'/, "sem log info o CLI nao reporta os aplicativos");
+        assert.match(fn, /AllowedApps/, "nao confere o split tunnel");
+        assert.match(fn, /disconnect/, "tunel que subiu errado tem que ser derrubado");
+    });
+
+    test("o log do connect, que carrega o caminho do perfil, e apagado sempre", () => {
+        const fn = /function Connect-Tunnel\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
+        assert.ok(fn.includes("finally"), "sem finally o log fica largado no TEMP");
+        assert.match(fn.slice(fn.indexOf("finally")), /Remove-Item/);
+    });
+
     test("falhar ao subir o tunel nao derruba a instalacao, mas avisa", () => {
         // O plugin tenta subir sozinho no start(). O que nao pode e a pessoa achar que esta
         // pronto e descobrir pelo botao cinza.
