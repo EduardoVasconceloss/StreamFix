@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.1.1](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.1.0...v2.1.1) (2026-09-11)
+
+
+### Bug Fixes
+
+* o tunel carregava a faixa interna em vez de rota ([accc5cc](https://github.com/EduardoVasconceloss/StreamFix/commit/accc5ccef48c1a0c0bec7577062e487d5ec70b15))
+* publicar o que a documentacao manda rodar ([b73b29e](https://github.com/EduardoVasconceloss/StreamFix/commit/b73b29e747fe8c4a1a881d21ed08c7f9c8532ebc))
+
 ## [2.1.0](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.0.1...v2.1.0) (2026-09-11)
 
 
