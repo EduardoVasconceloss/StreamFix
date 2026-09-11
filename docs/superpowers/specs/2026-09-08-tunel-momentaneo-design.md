@@ -1,5 +1,7 @@
 # Túnel momentâneo: restaurar o Go Live com latência nativa
 
+> **Substituida em 11/09/2026** por `2026-09-11-tunel-nas-duas-pontas-design.md`.
+
 Redesenho do StreamFix para a regressão de 03/09/2026, em que o Discord passou a verificar a
 região também no plano de mídia e o roteamento apenas do gateway deixou de ser suficiente.
 
