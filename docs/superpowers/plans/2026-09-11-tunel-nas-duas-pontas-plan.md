@@ -42,6 +42,11 @@ por ora, como já está no resto do projeto (ver `docs/adr/0001`).
 **Isso muda a spec**, não só o plano. A seção 3.3 precisa falar de duas implementações, e a
 seção 8 precisa de testes para as duas.
 
+> **Adiado por decisão de 11/09/2026: só Windows por enquanto.** Linux e macOS ficam para
+> depois. O registro fica porque a lacuna é real e vai voltar — assim que o primeiro amigo
+> fora do Windows quiser assistir. Quando voltar, `tunnel/controle` já estará atrás de uma
+> interface, que é o que torna a adição barata.
+
 ### 2. O patch `2026-08-video-guard` também tem que sair — e pelo motivo oposto ao da proxy
 
 A seção 5 da spec lista o que morre e não o menciona. Deveria.
@@ -187,14 +192,23 @@ máquina** falam com o mesmo `IP:porta`. Em uso real a colisão não existe.
 **Comportamento:** ao clicar em Go Live, verificar túnel de pé **e** saída estrangeira pelo
 `localAddress`. Faltando qualquer um, bloquear com o motivo na tela e oferecer subir o túnel.
 
-**O ponto difícil e ainda não resolvido: onde enganchar.** Os dois patches atuais são
-substituições de expressão — servem para trocar um valor, não para abortar uma ação. Bloquear
-exige interceptar o disparo da criação da transmissão. Isso precisa de investigação no bundle
-antes de virar tarefa, e é o maior risco técnico do plano.
+**O gancho existe, e é melhor do que se esperava.** Investigado no bundle em 11/09/2026
+(Discord 1.0.9257): o módulo que contém `startStreamWithSource` exporta uma função assíncrona
+que **já tem protocolo de recusa próprio** — ela retorna `[false, "no user or channel"]`,
+`[false, "no source"]` e `[false, "no permission"]` em três caminhos, e `[true, undefined]` no
+sucesso.
 
-**Se não houver gancho confiável**, a alternativa é avisar de forma inescapável em vez de
-bloquear — pior, mas honesto, e ainda muito melhor que o silêncio de hoje. Decidir com o bundle
-na mão, não agora.
+Ou seja, recusar não precisa ser inventado: a interface do Discord já sabe lidar com uma recusa
+vinda dali. O patch prefixa uma verificação ao corpo da função e retorna a mesma forma:
+
+```
+const r = await $self.antesDeTransmitir();
+if (!r.ok) return [!1, r.motivo];
+```
+
+**Âncora do patch:** a string literal `startStreamWithSource`, que aparece no módulo tanto no
+logger quanto em `{location:...}`. É estável o bastante; o teste de regressão é o próprio
+`find` falhar, que o Vencord reporta alto.
 
 **E o aviso do monitor** entra junto: veredito `quebrado` com causa `entrega` diz "a transmissão
 precisa ser recriada"; causa `captura` diz "o problema é local, recriar não adianta". Só avisa
@@ -208,9 +222,23 @@ precisa ser recriada"; causa `captura` diz "o problema é local, recriar não ad
 
 Ao entrar numa transmissão: subir o túnel, confirmar a saída, entrar, e derrubar 10 s depois.
 
-**Mesmo risco de gancho da fase 5**, agravado: aqui não basta observar, é preciso **segurar** a
-entrada até o túnel confirmar. Se não der para segurar, o fluxo degrada para "avisa e deixa a
-pessoa decidir" — e por 12f o estrago de entrar sem túnel é só dela.
+**O gancho existe, mas é síncrono — e isso decide o desenho.** O módulo 401843 (3 KB) exporta
+`A9` (entrar na transmissão) e `Nl` (entrar e focar). As duas **despacham `STREAM_WATCH` e
+retornam**; não são assíncronas. Não dá para esperar o túnel dentro delas sem torná-las
+assíncronas e mudar a ordem para quem as chama.
+
+**Portanto o padrão não é segurar, é abortar e repetir:**
+
+```
+intercepta → túnel de pé? ─não─▶ não entra, avisa "preparando…", sobe o túnel,
+                                  e chama a função original de novo
+             └─sim─▶ segue
+```
+
+Pior que segurar, e suficiente: por 12f, se alguém escapar e entrar sem túnel, o estrago é só
+dele. O risco a vigiar é o laço — a repetição tem que ser de uma tentativa só, nunca reentrante.
+
+**Âncora do patch:** a string `Cannot join a null voice channel`, literal e única no módulo.
 
 **Dois pontos não medidos, e vale medir antes de escrever:**
 - Subir o túnel no meio de uma call causa soluço na voz?
@@ -257,10 +285,15 @@ deste projeto — o teste que passa medindo outra coisa.
 
 Podem começar já, em paralelo: **0**, **1**, **2** e a metade servidor da **4**.
 
-O caminho crítico passa por 2 → 3 → 5/6. E o maior risco não é nenhuma dessas: é o gancho de
-interceptação das fases 5 e 6. **Vale investigar o bundle antes de começar a fase 0**, porque
-se não houver gancho, o desenho do porteiro muda — e é melhor saber disso com o código antigo
-ainda de pé.
+O caminho crítico passa por 2 → 3 → 5/6.
+
+**O que era o maior risco do plano — o gancho de interceptação — foi investigado em 11/09 e
+está resolvido.** Os dois pontos existem e as âncoras estão registradas nas fases 5 e 6. O
+desenho do porteiro não muda; o do fluxo de assistir muda de "segurar" para "abortar e
+repetir".
+
+O maior risco que sobra é a fase 7, a elevação no instalador, porque é a única que mexe em
+privilégio e a única sem precedente no projeto.
 
 ---
 
@@ -269,4 +302,8 @@ ainda de pé.
 - **macOS.** Fora do escopo, como no resto do projeto.
 - **Refinamento de voz direta.** Seção 7 da spec. Depende de faixas de IP que ninguém levantou,
   e otimizar latência antes de a entrega funcionar em uso real é otimizar a coisa errada.
+
+  Um achado da investigação do gancho que servirá a ele: o módulo 401843 exporta `dA`, que faz
+  `PATCH /streams/{key}` com `{region}`. **Dá para mudar a região de uma transmissão já
+  criada**, sem recriá-la — o que eu tinha assumido ser impossível ao escrever a spec.
 - **Recuperação automática.** D4: o monitor só avisa até provar que acerta com gente real.
