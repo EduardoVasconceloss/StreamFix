@@ -16,7 +16,7 @@ Diagnóstico de origem em `docs/research/regressao-encoder-inativo-2026-09-03.md
 | 1 — coletor | **feita** em 11/09 |
 | 2 — perfil | **feita** em 11/09 |
 | 3 — controle | **feita** em 11/09 |
-| 4 — provisionamento | não iniciada |
+| 4 — provisionamento | **feita** em 11/09 |
 | 5 — porteiro | não iniciada (gancho investigado) |
 | 6 — assistir | não iniciada (gancho investigado) |
 | 7 — instalador | não iniciada |
@@ -289,6 +289,51 @@ nunca sai da máquina, e não aparece em log, em erro ou em relatório de diagn�
 **Nota operacional:** uma interface WireGuard basta. O arranjo de duas interfaces de 12d era
 exigência do laboratório — o WireSock rouba o tráfego de volta quando duas pontas na **mesma
 máquina** falam com o mesmo `IP:porta`. Em uso real a colisão não existe.
+
+### O que a fase mediu
+
+Quatro unidades em `provisionamento/`, 36 testes novos (`registro`, `cliente`). Provado contra a
+VPS real: o serviço registrou uma chave descartável, devolveu `10.8.0.3` — pulando corretamente o
+`.1` do servidor e o `.2` do peer do laboratório — e o `wg show wg0` confirmou o peer vivo com
+`allowed ips: 10.8.0.3/32`. Convite chutado deu 403, chave malformada 400, e o limite de
+tentativas cortou em 429 depois de dez chutes num minuto. Tudo removido depois.
+
+| unidade | o que é |
+|---|---|
+| `chaves.ts` | par X25519. **Conferido contra `wg pubkey`**: 5 de 5 iguais |
+| `registro.ts` | o núcleo puro — convites, alocação, bloco do peer. Sem imports |
+| `cliente.ts` | gera o par, manda só a pública, confere a resposta |
+| `servidor.mjs` | HTTP, disco e `wg`. Fino, como o `observador` |
+
+**Quatro decisões que a spec não tinha:**
+
+**1. Registrar a mesma chave de novo não gasta endereço nem uso de convite.** Reinstalar é comum;
+sem isso a faixa encolheria a cada reinstalação de alguém, e um convite de um uso se esgotaria
+com uma pessoa só. A resposta devolve o endereço que já era dela, e o servidor sabe que não
+precisa mexer na interface.
+
+**2. A chave é conferida antes do convite.** Quem manda lixo nos dois campos recebe "chave
+inválida". Responder "convite inválido" primeiro transformaria o endpoint num oráculo de
+convites.
+
+**3. O cliente confere a chave pública da saída, quando a conhece.** Isto é a correção de um
+buraco real: **o registro viaja em HTTP puro**, porque a saída tem IP e não domínio, e não há
+certificado a emitir. O convite vazando é chato; o grave é alguém no caminho responder com
+**outra saída** — e a mídia do Discord passar a sair pela máquina dessa pessoa. Como a saída
+padrão é conhecida de antemão, conferir no cliente fecha isso sem TLS. Quando a saída é parâmetro
+(D8) e a chave não é conhecida, o registro segue sem a conferência.
+
+**4. `SIGHUP` recarrega o estado.** Convites são criados e revogados editando o arquivo; sem
+recarga, quem revogasse acharia que revogou.
+
+**Achado de ambiente:** o Node do Ubuntu 26.04 é compilado **sem** o removedor de tipos
+(`ERR_NO_TYPESCRIPT`), então o servidor não pode carregar `.ts` em produção. O deploy empacota
+com esbuild num `servidor.js` só — o que é melhor para um serviço de longa duração de qualquer
+jeito, porque tira uma dependência de runtime.
+
+**O que não entrou, e por quê:** unidade systemd, exposição da porta no firewall e ferramenta de
+administração de convites. Tudo isso é entrega (fase 8); hoje o serviço roda à mão, escuta só no
+loopback e não está no firewall. A VPS ficou com `~/streamfix-prov/servidor.js` e nada rodando.
 
 ---
 
