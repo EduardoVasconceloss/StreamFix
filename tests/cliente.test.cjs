@@ -135,6 +135,11 @@ test("cada codigo de recusa vira uma frase que a pessoa consegue agir", () => {
     assert.match(motivoDoErro(403, { codigo: "convite_revogado" }), /peca outro/);
     assert.match(motivoDoErro(403, { codigo: "convite_esgotado" }), /maximo de vezes/);
     assert.match(motivoDoErro(503, { codigo: "faixa_cheia" }), /liberar um endereco/);
+
+    // Problemas DA SAIDA precisam dizer que sao dela: sem isso a pessoa fica tentando de novo
+    // achando que errou o convite, e o convite estava certo o tempo todo.
+    assert.match(motivoDoErro(500, { codigo: "peer_nao_aplicado" }), /avise quem administra/);
+    assert.match(motivoDoErro(500, { codigo: "estado_nao_gravado" }), /avise quem administra/);
     assert.match(motivoDoErro(400, { codigo: "chave_invalida" }), /bug do StreamFix/);
     assert.match(motivoDoErro(500, {}), /500/);
     assert.match(motivoDoErro(500, null), /500/);

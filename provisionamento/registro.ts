@@ -221,3 +221,79 @@ export function blocoDoPeer(peer: Peer): string {
         ""
     ].join("\n");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Administracao dos convites
+//
+// Puro, como o resto deste arquivo: quem gera aleatoriedade e grava em disco e o `convites.mjs`.
+// A separacao e a mesma de sempre -- a decisao fica onde da para testa-la.
+// ---------------------------------------------------------------------------------------------
+
+/** Quantos usos um convite pode ter. Mais que isso e uma lista de convidados, nao um convite. */
+export const USOS_MAXIMOS = 50;
+
+export type ResultadoConvite =
+    | { ok: true; estado: Estado; convite: Convite }
+    | { ok: false; motivo: string };
+
+/**
+ * Cria um convite.
+ *
+ * Recusa codigo repetido em vez de sobrescrever: sobrescrever zeraria os usos de um convite que
+ * ja esta na rua, e ninguem que administra uma saida quer descobrir isso depois.
+ */
+export function criarConvite(estado: Estado, codigo: string, usos: number): ResultadoConvite {
+    if (typeof codigo !== "string" || codigo.trim().length < 8) {
+        return { ok: false, motivo: "o codigo precisa ter pelo menos 8 caracteres" };
+    }
+    if (codigo !== codigo.trim()) {
+        // Espaco na ponta sobrevive a um copiar-e-colar e depois nao casa com nada.
+        return { ok: false, motivo: "o codigo nao pode comecar nem terminar com espaco" };
+    }
+    if (!Number.isInteger(usos) || usos < 1 || usos > USOS_MAXIMOS) {
+        return { ok: false, motivo: `usos precisa ser um inteiro entre 1 e ${USOS_MAXIMOS}` };
+    }
+    if (estado.convites.some(c => c.codigo === codigo)) {
+        return { ok: false, motivo: "ja existe um convite com esse codigo" };
+    }
+
+    const convite: Convite = { codigo, usos, usados: 0 };
+    return { ok: true, estado: { ...estado, convites: [...estado.convites, convite] }, convite };
+}
+
+/**
+ * Revoga um convite. Devolve `null` quando ele nao existe.
+ *
+ * **Nao mexe em quem ja entrou** -- tirar uma pessoa e remover o peer dela, que e outra
+ * operacao. Revogar so fecha a porta para quem ainda nao passou.
+ */
+export function revogarConvite(estado: Estado, codigo: string): Estado | null {
+    const convite = estado.convites.find(c => c.codigo === codigo);
+    if (!convite) return null;
+    if (convite.revogado) return estado;
+
+    return {
+        ...estado,
+        convites: estado.convites.map(c => c.codigo === codigo ? { ...c, revogado: true } : c)
+    };
+}
+
+export interface Resumo {
+    faixa: string;
+    enderecosLivres: number;
+    convites: Array<Convite & { restam: number }>;
+    peers: Peer[];
+}
+
+/** O que quem administra precisa ver de uma vez para decidir alguma coisa. */
+export function resumo(estado: Estado): Resumo {
+    const total = enderecosDaFaixa(estado.faixa).length;
+    const usados = new Set([estado.enderecoServidor, ...estado.peers.map(p => p.endereco)]);
+
+    return {
+        faixa: estado.faixa,
+        enderecosLivres: total - usados.size,
+        convites: estado.convites.map(c => ({ ...c, restam: c.revogado ? 0 : Math.max(0, c.usos - c.usados) })),
+        peers: [...estado.peers]
+    };
+}

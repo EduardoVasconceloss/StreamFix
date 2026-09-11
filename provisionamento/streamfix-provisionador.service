@@ -1,0 +1,67 @@
+# Unit do provisionador da saida.
+#
+# Instalar em /etc/systemd/system/streamfix-provisionador.service
+#
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now streamfix-provisionador
+#   sudo systemctl reload streamfix-provisionador    # depois de mexer nos convites
+#
+# Ver provisionamento/README.md para o passo a passo inteiro.
+
+[Unit]
+Description=StreamFix -- provisionador da saida WireGuard
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Nao roda como root. A unica coisa que ele precisa de privilegiada e chamar `wg set` para
+# aplicar um peer novo, e CAP_NET_ADMIN cobre exatamente isso -- nada mais.
+User=streamfix
+Group=streamfix
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+
+# --endereco 0.0.0.0 so quando a porta estiver de fato aberta e voce quiser que gente de fora
+# se registre. O padrao do servidor e 127.0.0.1, e mudar isso e uma decisao, nao um descuido.
+ExecStart=/usr/bin/node /opt/streamfix/servidor.js \
+    --estado /var/lib/streamfix/estado.json \
+    --porta 8787 \
+    --interface wg0 \
+    --endereco 127.0.0.1
+
+# O servidor guarda o estado em memoria; SIGHUP faz ele reler o arquivo. E o que torna
+# `convites.mjs` util sem reiniciar e derrubar ninguem.
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=on-failure
+RestartSec=5
+
+# O estado tem chave publica de todo mundo e os codigos de convite. Nao tem chave privada de
+# ninguem, mas um convite vazado deixa um estranho entrar na sua saida.
+StateDirectory=streamfix
+StateDirectoryMode=0700
+UMask=0077
+
+# Endurecimento. O servico le um arquivo de estado, fala TCP e chama `wg` -- nao precisa de
+# mais nada, entao nada mais fica disponivel.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

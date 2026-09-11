@@ -59,6 +59,12 @@ export function motivoDoErro(status: number, corpo: unknown): string {
         case "convite_esgotado": return "este convite ja foi usado o numero maximo de vezes";
         case "faixa_cheia": return "a saida esta cheia; quem administra precisa liberar um endereco";
         case "chave_invalida": return "a saida recusou a chave gerada aqui (isto e bug do StreamFix)";
+        // Os dois abaixo sao problemas DA SAIDA, nao de quem instala. Dizer isso importa: sem
+        // nome, a pessoa fica tentando de novo achando que errou o convite.
+        case "peer_nao_aplicado": return "a saida aceitou voce mas nao conseguiu ligar o WireGuard;"
+            + " avise quem administra a saida e tente de novo em seguida";
+        case "estado_nao_gravado": return "a saida nao conseguiu salvar o seu cadastro;"
+            + " avise quem administra a saida";
         default: return `a saida respondeu ${status} sem um motivo que eu conheca`;
     }
 }

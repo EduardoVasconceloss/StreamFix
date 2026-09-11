@@ -20,7 +20,7 @@ Diagnóstico de origem em `docs/research/regressao-encoder-inativo-2026-09-03.md
 | 5 — porteiro | **feita** em 11/09 |
 | 6 — assistir | **feita** em 11/09 |
 | 7 — instalador | **feita** em 11/09 |
-| 8 — entrega | não iniciada |
+| 8 — entrega | **código feito** em 11/09; falta a validação com gente |
 
 **Pendência da fase 0:** a verificação de tipos completa não foi feita. Ela exige compilar
 dentro de um checkout do mod, e o checkout desta máquina é o que o Discord do usuário carrega —
@@ -580,6 +580,66 @@ pessoas que estão no escuro desde 03/09 recebem a explicação.
 processo que não é o Discord tem que continuar saindo pelo IP brasileiro. Foi ele que pegou o
 `AllowedApps` sendo descartado em silêncio, e é a única defesa contra o pior modo de falha
 deste projeto — o teste que passa medindo outra coisa.
+
+### O que a fase mediu
+
+**O teste negativo passou, e virou ferramenta.** Medido em 11/09, com o túnel de pé: o Discord
+reportou `159.112.151.37` (Santiago) como endereço local da conexão de mídia, e um processo que
+não é o Discord, na mesma máquina e no mesmo minuto, saiu por `177.42.223.136` (BR). O split
+tunnel faz o que promete.
+
+Medição que não vira ferramenta morre com quem mediu, então virou `installer/Verifica-Tunel.ps1`
+— um comando que qualquer pessoa roda. Ele compara a saída de um processo que não é o Discord
+contra o endereço da saída (não contra "BR", que só valeria para quem está no Brasil), e foi
+verificado que **detecta o defeito**: forçando o endereço da saída para o IP local, ele acusa
+"o túnel está levando a máquina inteira" e sai com código 1.
+
+**Administração de convites.** `criarConvite`, `revogarConvite` e `resumo` entraram em
+`registro.ts` como funções puras (13 testes), e `provisionamento/convites.mjs` é a casca:
+`iniciar`, `novo`, `listar`, `revogar`, `remover`. Códigos de 20 caracteres num alfabeto de 32
+sem `I`, `L`, `O` e `U` — 100 bits, e sem os caracteres que se confundem quando alguém digita
+em vez de colar.
+
+Duas decisões que a operação exigia e a spec não tinha:
+
+1. **Código repetido é recusado, nunca sobrescrito.** Sobrescrever zeraria os usos de um convite
+   que já está na rua, e quem administra só descobriria com gente entrando por um convite que
+   ele achava esgotado.
+2. **Revogar não tira quem já entrou.** São operações separadas de propósito: um convite de
+   cinco usos que vazou não pode derrubar as quatro pessoas certas que entraram por ele.
+
+O ciclo inteiro foi exercitado de ponta a ponta contra o `servidor.mjs` real: criar convite de
+2 usos, registrar duas pessoas pelo `provisiona.mjs` de verdade (endereços `.2` e `.3`, pulando
+o `.1` do servidor), esgotar, remover uma, revogar.
+
+**Dois erros do servidor não tinham nome no cliente.** `peer_nao_aplicado` e
+`estado_nao_gravado` caíam no genérico "a saída respondeu 500 sem um motivo que eu conheça" —
+e quem instala ficaria tentando de novo achando que errou o convite, com o convite certo o
+tempo todo. Agora dizem que o problema é **da saída** e mandam avisar quem a administra.
+
+**A unit do systemd não roda como root.** A única coisa privilegiada que o provisionador faz é
+`wg set`, e `CAP_NET_ADMIN` cobre exatamente isso. O resto é endurecimento padrão, mais
+`ExecReload` com `SIGHUP` — que é o que torna o `convites.mjs` útil sem reiniciar e derrubar
+ninguém.
+
+**O README foi reescrito.** As 463 linhas antigas descreviam a proxy de gateway, o PAC, a lista
+gratuita e o Tor: um produto que não existe mais desde a fase 0. A versão nova tem 243 linhas,
+abre dizendo o que quebrou em 03/09, e diz na cara o preço que a spec escolheu pagar — **você
+precisa de uma saída**, e **quem assiste também precisa de túnel**, que é a parte que
+surpreende.
+
+**O que ficou por fazer, e por quê:**
+
+- **A saída não foi exposta.** A unit e o passo a passo estão escritos, mas abrir a porta 8787
+  para a internet é decisão do dono da VPS, não minha. O `provisionamento/README.md` diz o que
+  fica exposto, o que protege (convite de 100 bits, 10 tentativas por minuto, chave fixada no
+  cliente) e o que continua exposto e é honesto dizer (o convite trafega em claro, então quem
+  estiver no caminho pode gastar um uso).
+- **A validação com os amigos não aconteceu.** É literalmente o item que precisa de outras
+  pessoas. Com ela vêm as duas medições que a fase 6 deixou em aberto: o soluço na voz ao subir
+  o túnel no meio de uma call, e se dez segundos é folga suficiente em conexão lenta.
+- **O `assets/instalacao.gif` ficou obsoleto** e saiu do README em vez de continuar lá mentindo:
+  ele mostra o instalador perguntando sobre proxy. Precisa ser regravado com o passo do convite.
 
 ---
 
