@@ -1077,6 +1077,56 @@ function Test-DotNetParaWireSock($cli) {
     return $null
 }
 
+
+# Chama o wiresock-connect-cli sem deixar o PowerShell matar a instalacao.
+#
+# Duas armadilhas, e o proprio arquivo ja avisava sobre a primeira (ver Invoke-Native):
+#
+# 1. `2>&1` num executavel nativo no PowerShell 5.1 embrulha cada linha de stderr num
+#    ErrorRecord. Com ErrorActionPreference=Stop -- que e o desta instalacao -- isso vira erro
+#    terminante mesmo quando o comando funcionou. Foi assim que uma falha do servico do
+#    WireSock chegou ao usuario como uma caixa falando de "EndInvoke", sem dizer nada util.
+#
+# 2. O CLI conversa com o servico do WireSock por gRPC. Quando o servico esta parado ou
+#    travado, ele nao devolve erro: ele lanca `Grpc.Core.RpcException: DeadlineExceeded`. Isso
+#    nao e problema do perfil nem do convite, e merece nome proprio.
+function Invoke-WireSock($cli, [string[]] $argumentos) {
+    $anterior = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $texto = (& $cli @argumentos 2>&1 | Out-String)
+        return [pscustomobject]@{ texto = $texto; codigo = $LASTEXITCODE }
+    } catch {
+        return [pscustomobject]@{ texto = $_.Exception.Message; codigo = -1 }
+    } finally {
+        $ErrorActionPreference = $anterior
+    }
+}
+
+# O servico do WireSock nao esta respondendo ao CLI.
+#
+# Acontece depois de instalar ou consertar o .NET: o servico ficou de pe com o runtime velho e
+# so volta a si quando reinicia. Tentar reiniciar daqui costuma falhar por falta de permissao
+# -- o instalador nao eleva de proposito --, entao a instrucao importa mais do que a tentativa.
+function Repair-WireSockServico {
+    Write-Warn 'O servico do WireSock nao esta respondendo.'
+
+    $nomes = @('WireSockConnectService', 'WireSockAppService')
+    $reiniciou = $false
+    foreach ($nome in $nomes) {
+        $svc = Get-Service -Name $nome -ErrorAction SilentlyContinue
+        if (-not $svc) { continue }
+        try {
+            Restart-Service -Name $nome -Force -ErrorAction Stop
+            Write-Step "Reiniciei o $nome"
+            $reiniciou = $true
+        } catch {
+            Write-Host "  Nao consegui reiniciar o $nome (precisa de administrador)." -ForegroundColor DarkGray
+        }
+    }
+    return $reiniciou
+}
+
 function Get-WireSock {
     $cli = Find-WireSockCli
     if (-not $cli) { $cli = Install-WireSock }
@@ -1093,6 +1143,19 @@ function Get-WireSock {
         throw 'Conserte o .NET e rode o instalador de novo.'
     }
 
+    # O CLI inicia, mas ele so faz alguma coisa se o servico responder. Perguntar a lista de
+    # perfis e a chamada mais barata que prova isso.
+    $r = Invoke-WireSock $cli @('list')
+    if ($r.texto -match 'RpcException|DeadlineExceeded|Unhandled exception') {
+        if (Repair-WireSockServico) { $r = Invoke-WireSock $cli @('list') }
+    }
+    if ($r.texto -match 'RpcException|DeadlineExceeded|Unhandled exception') {
+        Write-Err 'O servico do WireSock nao responde, entao nada do StreamFix funciona.'
+        Write-Host '  Reinicie o computador e rode o instalador de novo.' -ForegroundColor DarkGray
+        Write-Host '  (Se acabou de instalar ou consertar o .NET, e exatamente isso que falta.)' -ForegroundColor DarkGray
+        throw 'Reinicie o computador e tente de novo.'
+    }
+
     return $cli
 }
 
@@ -1102,14 +1165,14 @@ function Get-WireSock {
 # pasta temporaria, e o `finally` o apaga mesmo quando algo falha no meio. So a linha do
 # Endpoint sai daqui.
 function Get-ExistingTunnel($cli, $profile) {
-    $existing = & $cli list 2>&1 | Out-String
+    $existing = (Invoke-WireSock $cli @('list')).texto
     if ($existing -notmatch [regex]::Escape($profile)) { return $null }
 
     $dir = Join-Path $env:TEMP "streamfix-lt-$([guid]::NewGuid().ToString('N').Substring(0,8))"
     $file = Join-Path $dir 'perfil.conf'
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     try {
-        & $cli export $profile $file 2>&1 | Out-Null
+        $null = Invoke-WireSock $cli @('export', $profile, $file)
         if (-not (Test-Path -LiteralPath $file)) { return $null }
 
         $endpoint = $null
@@ -1221,16 +1284,17 @@ function Invoke-Provisioner($provisionerDir, $invite, $url, $exitKey, $confPath)
 # O nome do perfil no WireSock vem do NOME DO ARQUIVO, nao do que se pede no import -- e o
 # import se recusa a sobrescrever. Por isso: apagar antes, e so entao importar.
 function Import-TunnelProfile($cli, $confPath, $profile) {
-    $existing = & $cli list 2>&1 | Out-String
+    $existing = (Invoke-WireSock $cli @('list')).texto
     if ($existing -match [regex]::Escape($profile)) {
         Write-Step "Substituindo o perfil $profile que ja existia"
-        & $cli delete $profile | Out-Null
+        $null = Invoke-WireSock $cli @('delete', $profile)
     }
 
-    $output = & $cli import $confPath 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) { throw "O WireSock recusou o perfil: $output" }
+    $importado = Invoke-WireSock $cli @('import', $confPath)
+    $output = $importado.texto
+    if ($importado.codigo -ne 0) { throw "O WireSock recusou o perfil: $output" }
 
-    $after = & $cli list 2>&1 | Out-String
+    $after = (Invoke-WireSock $cli @('list')).texto
     if ($after -notmatch [regex]::Escape($profile)) {
         throw "Importei o perfil mas o WireSock nao o lista. Saida: $after"
     }
@@ -1254,7 +1318,7 @@ function Repair-TunnelProfile($cli, $profile) {
     $file = Join-Path $dir "$profile.conf"
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     try {
-        & $cli export $profile $file 2>&1 | Out-Null
+        $null = Invoke-WireSock $cli @('export', $profile, $file)
         if (-not (Test-Path -LiteralPath $file)) { Write-Warn 'Nao consegui exportar o perfil.'; return $false }
 
         $linhas = @(Get-Content -LiteralPath $file)
@@ -1274,12 +1338,13 @@ function Repair-TunnelProfile($cli, $profile) {
 
         # Derrubar so se o que esta no ar for este perfil: `disconnect` nao escolhe, e
         # consertar um perfil parado nao pode desligar o tunel que a pessoa esta usando.
-        if ((& $cli status 2>&1 | Out-String) -match [regex]::Escape($profile)) {
-            & $cli disconnect 2>&1 | Out-Null
+        if ((Invoke-WireSock $cli @('status')).texto -match [regex]::Escape($profile)) {
+            $null = Invoke-WireSock $cli @('disconnect')
         }
-        & $cli delete $profile 2>&1 | Out-Null
-        $out = (& $cli import $file 2>&1 | Out-String)
-        if ($LASTEXITCODE -ne 0) { Write-Err "Nao consegui reimportar o perfil: $out"; return $false }
+        $null = Invoke-WireSock $cli @('delete', $profile)
+        $reimportado = Invoke-WireSock $cli @('import', $file)
+        $out = $reimportado.texto
+        if ($reimportado.codigo -ne 0) { Write-Err "Nao consegui reimportar o perfil: $out"; return $false }
 
         Write-Ok 'Perfil consertado: o tunel agora carrega o trafego do Discord.'
         return $true
@@ -1335,7 +1400,7 @@ function Connect-Tunnel($cli, $profile) {
     }
 
     # Quem diz se subiu e o status, nao o codigo de saida.
-    $status = (& $cli status 2>&1 | Out-String)
+    $status = (Invoke-WireSock $cli @('status')).texto
     if ($status -notmatch [regex]::Escape($profile)) {
         Write-Warn 'O WireSock nao confirmou a conexao.'
         return $false
@@ -1351,7 +1416,7 @@ function Connect-Tunnel($cli, $profile) {
     # Aqui basta pegar o caso catastrofico: nenhum split tunnel declarado.
     if ($log -match 'AllowedApps') {
         if ($log -notmatch 'AllowedApps[^\r\n]*Discord') {
-            & $cli disconnect 2>&1 | Out-Null
+            $null = Invoke-WireSock $cli @('disconnect')
             Write-Err 'O tunel subiu sem restringir ao Discord, entao eu o derrubei.'
             Write-Host '  Deixa-lo de pe mandaria TODO o seu trafego para a saida, nao so o Discord.' -ForegroundColor DarkGray
             return $false
@@ -1409,7 +1474,7 @@ function Install-Tunnel($url, $exitKey, $profile) {
             }
 
             # Configurado nao quer dizer de pe. Se estiver fora, o Discord abriria pelo Brasil.
-            $status = (& $cli status 2>&1 | Out-String)
+            $status = (Invoke-WireSock $cli @('status')).texto
             if ($status -notmatch [regex]::Escape($profile)) {
                 $existente | Add-Member -NotePropertyName conectado -NotePropertyValue (Connect-Tunnel $cli $profile) -Force
             } else {

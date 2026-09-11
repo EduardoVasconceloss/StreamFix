@@ -558,6 +558,37 @@ describe("instalador", () => {
         }
     });
 
+    test("nenhuma chamada ao CLI escapa do Invoke-WireSock", () => {
+        // `2>&1` num executavel nativo no PowerShell 5.1 embrulha cada linha de stderr num
+        // ErrorRecord, e com ErrorActionPreference=Stop -- que e o desta instalacao -- isso
+        // vira erro terminante mesmo quando o comando funcionou. O arquivo ja avisava sobre
+        // isso em Invoke-Native, e eu reintroduzi a armadilha em treze lugares: uma falha do
+        // servico do WireSock chegou ao usuario como uma caixa falando de "EndInvoke".
+        const codigo = INSTALADOR.split("\n").filter(l => !/^\s*#/.test(l)).join("\n");
+        const diretas = [...codigo.matchAll(/^.*& \$cli .*$/gm)]
+            .map(m => m[0].trim())
+            .filter(l => !l.includes("@argumentos"));   // a unica legitima e a de dentro do helper
+
+        assert.deepEqual(diretas, [], `chamadas ao CLI fora do Invoke-WireSock:\n${diretas.join("\n")}`);
+    });
+
+    test("o Invoke-WireSock protege e devolve o codigo", () => {
+        const fn = /function Invoke-WireSock\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
+        assert.match(fn, /ErrorActionPreference = 'Continue'/, "nao relaxa a checagem do PowerShell");
+        assert.match(fn, /finally/, "nao devolve o ErrorActionPreference ao que era");
+        assert.match(fn, /codigo = \$LASTEXITCODE/, "quem chama precisa do codigo de saida");
+    });
+
+    test("o servico morto vira mensagem, nao pilha de excecao", () => {
+        // O CLI conversa com o servico do WireSock por gRPC. Servico parado nao devolve erro:
+        // lanca Grpc.Core.RpcException DeadlineExceeded. Acontece logo depois de instalar ou
+        // consertar o .NET, porque o servico ficou de pe com o runtime velho.
+        const fn = /function Get-WireSock \{[\s\S]*?\n\}/.exec(INSTALADOR)[0];
+        assert.match(fn, /RpcException\|DeadlineExceeded/, "nao reconhece o servico morto");
+        assert.match(fn, /Repair-WireSockServico/, "nem tenta reiniciar o servico");
+        assert.match(fn, /Reinicie o computador/, "nao diz o que fazer");
+    });
+
     test("o instalador nao se auto-eleva", () => {
         // Medido em 11/09: o CLI do WireSock (list, status, import, delete, connect) funciona
         // sem elevacao. A unica coisa que precisa e a instalacao do WireSock, e quem levanta o

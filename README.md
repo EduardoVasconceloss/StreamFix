@@ -115,6 +115,8 @@ Ele confere que um processo que **não** é o Discord continua saindo pelo seu I
 
 **"Imagem Incompleta" ou erro `0xc0000127` ao instalar.** O `wiresock-connect-cli` é um programa .NET, e a instalação do .NET da sua máquina está quebrada — ele nem chega a iniciar. Instale o **.NET Desktop Runtime 10**, versão x64, em [dotnet.microsoft.com/download/dotnet/10.0](https://dotnet.microsoft.com/download/dotnet/10.0); instale por cima mesmo que já exista, porque isso grava um host novo. Não é problema do StreamFix, mas nada dele funciona até você resolver isso.
 
+**`Grpc.Core.RpcException` ou `DeadlineExceeded` durante a instalação.** O serviço do WireSock não está respondendo. Acontece logo depois de instalar ou consertar o .NET: o serviço ficou de pé com o runtime antigo. **Reinicie o computador** e rode o instalador de novo.
+
 **"A mídia está saindo por X, e não pela saída Y"** ao clicar em Go Live. O túnel não está carregando a mídia. Confira com `/streamfix`; se o WireSock disser "conectado" e o Discord disser outro endereço, reinstale o perfil.
 
 **"O túnel do StreamFix não está de pé."** O plugin tenta subir sozinho em segundo plano. Clique de novo em alguns segundos.
