@@ -638,6 +638,44 @@ contadores zeram. Desarmar o relógio até a entrega voltar seria mais simples e
 mascararia negação de verdade — na fixture `sem-espectador` os contadores zeram e nunca mais
 andam, e o monitor precisa continuar concluindo ali.
 
+## 12e. O IP do espectador é avaliado na entrada, não continuamente
+
+Teste de 11/09/2026, imediatamente após 12d, com a mesma montagem e a mesma transmissão no ar.
+Uma variável: o túnel **do espectador** é derrubado com a entrega funcionando.
+
+| momento | espectador sai por | espectadores | `framesEncoded` | `bytesSent` | fps |
+|---|---|---|---|---|---|
+| linha de base | `159.112.151.37` (CL) | 1 | 232.155 | 169.739.078 | 60 |
+| +45 s após a queda | `177.42.223.136` (BR) | 1 | 235.781 | 176.520.207 | 58 |
+| +95 s após a queda | `177.42.223.136` (BR) | 1 | 239.746 | 183.366.738 | 61 |
+
+Sem nenhuma interrupção, e **confirmado visualmente**: o vídeo continuou sendo desenhado na
+tela do espectador durante todo o período. Os contadores sozinhos provariam apenas que o
+servidor seguia aceitando; a confirmação de que o quadro chega é do usuário.
+
+**Conclusão: o gate avalia o IP de quem assiste no instante da entrada.** Depois disso a
+autorização daquela pessoa sobrevive à saída do túnel — simétrico ao fato 2, que já dizia isso
+do lado de quem transmite.
+
+Um segundo caminho para a mesma conclusão apareceu sem ter sido planejado. Esta transmissão
+acumulou mais de 232 mil quadros contínuos, sem nenhum zeramento de contador, desde 01:39 —
+atravessando inclusive um intervalo de cerca de quinze minutos em que **os dois** túneis
+estavam derrubados e as duas pontas estavam em IP brasileiro. A entrega não parou.
+
+### Consequência de produto
+
+O lado de quem assiste não precisa de túnel permanente. Basta que ele esteja de pé no momento
+de entrar na transmissão, o que permite um túnel de segundos — sobe ao entrar, desce em
+seguida. Ninguém paga latência para conversar.
+
+Isso reduz muito o pedido feito a quem só quer assistir, e também o consumo da franquia de
+saída: o tráfego de vídeo do espectador deixa de atravessar a VPS depois dos primeiros
+segundos.
+
+**Ainda em aberto (F2):** se um espectador brasileiro sem túnel derruba a entrega para a sala
+inteira ou apenas para si. Com um espectador só, 12c e 12d não distinguem os dois casos. O
+teste exige uma terceira pessoa entrando sem túnel enquanto outra assiste com túnel.
+
 ## 13. Consequências de produto
 
 O diferencial do StreamFix era não rotear a mídia: gateway pela saída, todo o resto direto,
