@@ -2,7 +2,7 @@
 // amostras. Funcao pura: nao le store, nao consulta rede, nao olha o relogio -- o tempo entra
 // pelo carimbo de cada amostra. Quem coleta e outro modulo; aqui so se decide.
 //
-// As tres regras abaixo vieram de medicao, nao do desenho original. Ver a fixture
+// As quatro regras abaixo vieram de medicao, nao do desenho original. Ver a fixture
 // tests/fixtures/sem-espectador.jsonl e os achados em
 // docs/superpowers/plans/2026-09-08-tunel-momentaneo-plan.md, fase 1.
 
@@ -36,14 +36,25 @@ export interface Estado {
     captura: number | null;
     /** Quando o progresso de entrega parou. `null` enquanto ha progresso. */
     paradoDesde: number | null;
+    /**
+     * Os contadores zeraram e a entrega ainda nao voltou a andar. Enquanto isto for verdade
+     * o monitor espera `atrasoEspectadorMs` a mais antes de concluir. Ver a regra 3.
+     */
+    renascendo: boolean;
 }
 
 export interface Opcoes {
     /** Quanto tempo sem progresso, com espectador presente, antes de declarar quebra. */
     toleranciaMs: number;
+    /**
+     * Quanto a contagem de espectadores pode chegar atrasada em relacao aos contadores.
+     * Medido em 11/09/2026: `getViewerIds()` levou 5,1s para registrar a saida do unico
+     * espectador, e 3,8s para registrar a volta. Os contadores zeram na hora.
+     */
+    atrasoEspectadorMs: number;
 }
 
-export const PADROES: Opcoes = { toleranciaMs: 4000 };
+export const PADROES: Opcoes = { toleranciaMs: 4000, atrasoEspectadorMs: 8000 };
 
 const SAUDAVEL = (motivo: string): Veredito => ({ estado: "saudavel", motivo });
 
@@ -54,6 +65,7 @@ export function estadoInicial(): Estado {
         bytes: null,
         captura: null,
         paradoDesde: null,
+        renascendo: false,
     };
 }
 
@@ -67,6 +79,11 @@ function regrediu(atual: number | null, anterior: number | null) {
     return atual != null && anterior != null && atual < anterior;
 }
 
+/** Zerou vindo de um valor positivo: o encoder foi derrubado, nao e so base nova. */
+function zerou(atual: number | null, anterior: number | null) {
+    return atual === 0 && anterior != null && anterior > 0;
+}
+
 export function avancar(anterior: Estado, a: Amostra, opcoes: Opcoes = PADROES): Estado {
     const base = { frames: a.framesEncoded, bytes: a.bytesSent, captura: a.capturaQuadros };
 
@@ -75,34 +92,62 @@ export function avancar(anterior: Estado, a: Amostra, opcoes: Opcoes = PADROES):
     // ninguem assistindo, entao ele nao serve para saber que ha espectador, e sem essa
     // informacao o monitor so consegue produzir falso positivo.
     if (a.espectadores <= 0) {
-        return { ...base, paradoDesde: null, veredito: SAUDAVEL("sem espectador: nada a concluir") };
+        return { ...base, paradoDesde: null, renascendo: false, veredito: SAUDAVEL("sem espectador: nada a concluir") };
     }
 
     // Regra 2. Uma renegociacao de codec zera bytesSent e packetsSent no mesmo ssrc. Isso nao e
     // parada, e uma base nova -- e o relogio de parada recomeca junto, para nao declarar quebra
     // no instante seguinte a uma renegociacao legitima.
     if (regrediu(a.framesEncoded, anterior.frames) || regrediu(a.bytesSent, anterior.bytes)) {
-        return { ...base, paradoDesde: null, veredito: SAUDAVEL("contador reiniciou: base nova") };
+        const derrubado = zerou(a.framesEncoded, anterior.frames) || zerou(a.bytesSent, anterior.bytes);
+        return {
+            ...base,
+            // Zerar nao e o mesmo que recuar. Recuar e renegociacao de codec, e a entrega
+            // continua; zerar e o encoder derrubado, e ai o relogio comeca a contar deste
+            // instante, com a folga da regra 3.
+            paradoDesde: derrubado ? a.t : null,
+            renascendo: derrubado,
+            veredito: SAUDAVEL(derrubado
+                ? "contador reiniciou do zero: encoder derrubado"
+                : "contador reiniciou: base nova"),
+        };
     }
 
     const entregaAndou = cresceu(a.framesEncoded, anterior.frames) || cresceu(a.bytesSent, anterior.bytes);
     if (entregaAndou) {
-        return { ...base, paradoDesde: null, veredito: SAUDAVEL("entrega avancando") };
+        return { ...base, paradoDesde: null, renascendo: false, veredito: SAUDAVEL("entrega avancando") };
     }
 
     // Sem numero nenhum nao se decide nada. Uma amostra vazia (a engine nao respondeu no prazo)
     // e um buraco na serie, nao prova de parada.
     if (a.framesEncoded == null && a.bytesSent == null) {
-        return { ...base, paradoDesde: anterior.paradoDesde, veredito: SAUDAVEL("sem dados nesta amostra") };
+        return { ...base, paradoDesde: anterior.paradoDesde, renascendo: anterior.renascendo, veredito: SAUDAVEL("sem dados nesta amostra") };
     }
 
+    // Regra 3. Quando os contadores zeram, a espera ganha a folga do atraso da store.
+    // Medido em 11/09/2026: ao sair o unico espectador os contadores zeram no mesmo instante,
+    // mas `getViewerIds()` so reporta zero cinco segundos depois -- mais que a tolerancia de
+    // quatro. Sem esta folga, toda saida de espectador vira um falso "quebrado", e no produto
+    // isso significa recriar a transmissao de quem nao tem problema nenhum.
+    //
+    // A folga e limitada de proposito. Desarmar o relogio ate a entrega voltar mascararia
+    // negacao de verdade: na fixture sem-espectador os contadores zeram e nunca mais andam.
+    const renascendo = anterior.renascendo;
+    const limite = opcoes.toleranciaMs + (renascendo ? opcoes.atrasoEspectadorMs : 0);
     const paradoDesde = anterior.paradoDesde ?? a.t;
     const parouHa = a.t - paradoDesde;
-    if (parouHa < opcoes.toleranciaMs) {
-        return { ...base, paradoDesde, veredito: SAUDAVEL(`parada de ${parouHa}ms, dentro da tolerancia`) };
+    if (parouHa < limite) {
+        return {
+            ...base,
+            paradoDesde,
+            renascendo,
+            veredito: SAUDAVEL(renascendo
+                ? `${parouHa}ms desde o encoder cair, dentro da folga de espectador`
+                : `parada de ${parouHa}ms, dentro da tolerancia`),
+        };
     }
 
-    // Regra 3. Captura e entrega sao eixos separados, e os dois zeram framesEncoded. Se a
+    // Regra 4. Captura e entrega sao eixos separados, e os dois zeram framesEncoded. Se a
     // captura tambem parou, religar tunel e recriar a transmissao nao resolve nada -- o
     // problema esta antes do encoder. So a causa "entrega" justifica recuperacao.
     const capturaAndou = cresceu(a.capturaQuadros, anterior.captura);
@@ -111,7 +156,7 @@ export function avancar(anterior: Estado, a: Amostra, opcoes: Opcoes = PADROES):
         ? `${parouHa}ms sem entrega com ${a.espectadores} assistindo, e a captura continua produzindo`
         : `${parouHa}ms sem entrega e sem captura: o problema esta antes do encoder`;
 
-    return { ...base, paradoDesde, veredito: { estado: "quebrado", causa, motivo } };
+    return { ...base, paradoDesde, renascendo: false, veredito: { estado: "quebrado", causa, motivo } };
 }
 
 /**

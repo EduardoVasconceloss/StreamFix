@@ -241,3 +241,30 @@ test("a mesma fixture, com um espectador, seria quebra", () => {
     assert.equal(finais.veredito.estado, "quebrado");
     assert.equal(finais.veredito.causa, "entrega");
 });
+
+test("a fixture real de entrega saudavel nunca declara quebra", () => {
+    // Gravada em 11/09/2026, teste de controle: emissor e espectador os dois saindo por
+    // Santiago. E a contraprova de quebra-entrada-espectador -- mesma montagem, mudando so o
+    // IP de quem assiste -- e a primeira serie que temos de uma entrega que funciona.
+    // Ver a secao 12d da pesquisa.
+    const amostras = daFixture("saudavel-longa");
+    const estados = percorrer(amostras);
+
+    const quebras = estados.filter(e => e.veredito.estado === "quebrado");
+    assert.equal(quebras.length, 0,
+        `falso positivo em serie saudavel: ${quebras[0]?.veredito.motivo ?? ""}`);
+
+    // A serie contem duas entradas de espectador, e a segunda vem depois de uma saida que
+    // zera os contadores. E esse zeramento que exercita a regra 2 por dado real: contador
+    // andando para tras e base nova, nao parada.
+    const entradas = amostras.filter((a, i) => a.espectadores > 0 && (amostras[i - 1]?.espectadores ?? 0) === 0);
+    assert.equal(entradas.length, 2, "a fixture precisa conter as duas entradas de espectador");
+
+    const reinicios = estados.filter(e => /reiniciou/.test(e.veredito.motivo));
+    assert.ok(reinicios.length > 0, "a fixture precisa exercitar a regra de reinicio de contador");
+
+    // E a folga de espectador precisa ser exercitada de verdade: sem ela esta serie declarava
+    // quebra 4074ms depois do encoder cair, cinco segundos antes de a store contar zero.
+    const folga = estados.filter(e => /folga de espectador/.test(e.veredito.motivo));
+    assert.ok(folga.length > 0, "a fixture precisa passar pela folga de atraso da store");
+});
