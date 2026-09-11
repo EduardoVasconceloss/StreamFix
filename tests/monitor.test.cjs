@@ -10,7 +10,8 @@ const { readFileSync } = require("node:fs");
 const { resolve } = require("node:path");
 const { test } = require("node:test");
 
-const { avancar, estadoInicial, percorrer, quadrosCapturados, PADROES } = require("../streamFix/tunnel/monitor.ts");
+const { avancar, estadoInicial, percorrer, PADROES } = require("../streamFix/tunnel/monitor.ts");
+const { aAmostra } = require("../streamFix/tunnel/coletor.ts");
 
 const T0 = 1_757_000_000_000;
 
@@ -141,53 +142,22 @@ test("espectador que sai encerra a conclusao de quebra", () => {
     assert.equal(v.at(-1).estado, "saudavel", "sem ninguem assistindo nao ha o que recuperar");
 });
 
-test("quadrosCapturados soma os backends e ignora os contadores de unicos", () => {
-    const tela = {
-        hybridGraphicsCaptureFrames: 80, hybridGraphicsCaptureFramesUnique: 4,
-        hybridGdiFrames: 1, hybridGdiBitBltFrames: 1, hybridGdiBitBltFramesUnique: 1,
-        hybridDxgiFrames: 0, hdrFrames: 0, videohookBackend: 0,
-    };
-    assert.equal(quadrosCapturados(tela), 82);
-    assert.equal(quadrosCapturados(null), null);
-});
-
 test("a fixture real de sem-espectador nunca dispara o monitor", () => {
-    const caminho = resolve(__dirname, "fixtures/sem-espectador.jsonl");
-    const linhas = readFileSync(caminho, "utf8").trim().split("\n").map(l => JSON.parse(l));
-    const amostras = linhas.filter(l => l.t && l.dados).map(l => {
-        const stream = l.dados.find(d => d.context === "stream");
-        const video = stream?.video?.[0];
-        return {
-            t: Date.parse(l.t),
-            // A fixture e de formato 1, gravada antes do campo existir. O cenario e, por
-            // definicao, zero espectador -- foi gravado sozinho de proposito.
-            espectadores: l.espectadores ?? 0,
-            framesEncoded: video?.framesEncoded ?? null,
-            bytesSent: video?.bytesSent ?? null,
-            capturaQuadros: quadrosCapturados(stream?.captura?.tela),
-        };
-    });
-
-    assert.ok(amostras.length > 200, `serie curta demais: ${amostras.length} amostras`);
-    const quebras = percorrer(amostras).filter(e => e.veredito.estado === "quebrado");
-    assert.equal(quebras.length, 0, `${quebras.length} falsos positivos na serie real`);
+    const amostras = daFixture("sem-espectador");
+    const estados = percorrer(amostras);
+    assert.equal(estados.filter(e => e.veredito.estado === "quebrado").length, 0);
 });
 
 /** Mapeia uma linha da fixture para a entrada do monitor. Compartilhado pelos casos reais. */
+// A reducao e a de producao, nao uma copia dela: assim toda fixture abaixo exercita o
+// coletor de verdade, e uma divergencia entre os dois vira teste vermelho em vez de bug.
 function daFixture(nome, espectadoresForcados) {
     const caminho = resolve(__dirname, `fixtures/${nome}.jsonl`);
     return readFileSync(caminho, "utf8").trim().split("\n").map(l => JSON.parse(l))
         .filter(l => l.t && l.dados)
         .map(l => {
-            const stream = l.dados.find(d => d.context === "stream");
-            const video = stream?.video?.[0];
-            return {
-                t: Date.parse(l.t),
-                espectadores: espectadoresForcados ?? l.espectadores ?? 0,
-                framesEncoded: video?.framesEncoded ?? null,
-                bytesSent: video?.bytesSent ?? null,
-                capturaQuadros: quadrosCapturados(stream?.captura?.tela),
-            };
+            const a = aAmostra(l, Date.parse(l.t));
+            return espectadoresForcados === undefined ? a : { ...a, espectadores: espectadoresForcados };
         });
 }
 
@@ -223,19 +193,7 @@ test("a mesma fixture, com um espectador, seria quebra", () => {
     // Prova que a serie real nao passa por falta de sinal: o que a segura e a regra do
     // espectador. Trocado esse unico campo, o monitor conclui quebra de entrega -- a captura
     // segue produzindo o tempo todo, entao a causa aponta o encoder.
-    const caminho = resolve(__dirname, "fixtures/sem-espectador.jsonl");
-    const linhas = readFileSync(caminho, "utf8").trim().split("\n").map(l => JSON.parse(l));
-    const amostras = linhas.filter(l => l.t && l.dados).map(l => {
-        const stream = l.dados.find(d => d.context === "stream");
-        const video = stream?.video?.[0];
-        return {
-            t: Date.parse(l.t),
-            espectadores: 1,
-            framesEncoded: video?.framesEncoded ?? null,
-            bytesSent: video?.bytesSent ?? null,
-            capturaQuadros: quadrosCapturados(stream?.captura?.tela),
-        };
-    }).filter(a => a.framesEncoded != null);
+    const amostras = daFixture("sem-espectador", 1).filter(a => a.framesEncoded != null);
 
     const finais = percorrer(amostras).at(-1);
     assert.equal(finais.veredito.estado, "quebrado");

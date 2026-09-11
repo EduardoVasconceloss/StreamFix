@@ -13,7 +13,7 @@ Diagnóstico de origem em `docs/research/regressao-encoder-inativo-2026-09-03.md
 | fase | estado |
 |---|---|
 | 0 — remover a proxy | **feita** em 11/09 |
-| 1 — coletor | não iniciada |
+| 1 — coletor | **feita** em 11/09 |
 | 2 — perfil | não iniciada |
 | 3 — controle | não iniciada |
 | 4 — provisionamento | não iniciada |
@@ -136,6 +136,25 @@ consomem. Isso é um teste de igualdade, não de comportamento novo, e por isso 
 **Fronteira que importa:** toda dependência de nome interno do Discord vive aqui. Quando o
 bundle renomear um campo, há **um** arquivo para consertar — e o sintoma será `null` na amostra,
 nunca zero, que é a diferença entre "não sei" e "mentir".
+
+**Como ficou, e por que virou dois arquivos.** O Node exige extensão explícita em `import`
+relativo dentro de `.ts`, mas escrever `./monitor.ts` quebraria o `tsc` do mod, que usa
+`moduleResolution: bundler` sem `allowImportingTsExtensions`. Isso forçou a separação — e ela
+é melhor do que o desenho original:
+
+- `tunnel/coletor.ts` — a tradução pura (`aAmostra`, `quadrosCapturados`). Só `import type` do
+  monitor, então nenhuma dependência em tempo de execução, e carregável por `require()` direto.
+  É onde mora tudo o que pode quebrar em silêncio.
+- `tunnel/observador.ts` — o laço. Importa os dois, não é carregável pelo Node, e por isso é
+  mantido fino de propósito: o que sobra nele é agendamento, e falha de agendamento aparece na
+  hora.
+
+`quadrosCapturados` mudou de casa junto, do monitor para o coletor: ele interpreta nomes de
+campo do Discord, então é tradução, não decisão.
+
+**Os testes do monitor agora passam pela redução de produção.** O `daFixture` deixou de ter uma
+cópia da extração e chama `aAmostra` — uma divergência entre o que a captura gravou e o que a
+produção lê vira teste vermelho em vez de bug.
 
 ---
 

@@ -159,23 +159,6 @@ export function avancar(anterior: Estado, a: Amostra, opcoes: Opcoes = PADROES):
     return { ...base, paradoDesde, renascendo: false, veredito: { estado: "quebrado", causa, motivo } };
 }
 
-/**
- * Reduz os contadores de captura a um numero so. O modulo nativo reporta um contador por
- * backend (Graphics Capture, DXGI, GDI, videohook) e troca de backend em tempo de execucao --
- * na fixture de 08/09 houve duas trocas. Olhar so um deles perderia a captura de vista
- * exatamente quando ela mudou de caminho. Os campos `*Unique` ficam de fora: quadro repetido
- * ainda e captura viva, e a diferenca entre os dois e outro assunto (quadro em branco).
- */
-export function quadrosCapturados(tela: Record<string, number> | null | undefined) {
-    if (tela == null) return null;
-    let total: number | null = null;
-    for (const [chave, valor] of Object.entries(tela)) {
-        if (!chave.endsWith("Frames") || typeof valor !== "number") continue;
-        total = (total ?? 0) + valor;
-    }
-    return total;
-}
-
 /** Percorre uma serie inteira. Existe para testar contra fixture gravada. */
 export function percorrer(amostras: Amostra[], opcoes: Opcoes = PADROES): Estado[] {
     const saida: Estado[] = [];
