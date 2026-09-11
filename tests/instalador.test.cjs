@@ -318,6 +318,45 @@ describe("instalador", () => {
         assert.match(fn.slice(fn.indexOf("finally")), /Remove-Item -LiteralPath \$dir -Recurse/);
     });
 
+    test("nada que so exista no PowerShell 7 ou no .NET Core", () => {
+        // O instalador roda em Windows PowerShell 5.1, que e .NET Framework -- e o .exe da
+        // janela e compilado por ps2exe, que tambem e 5.1. Nada disso da erro ao escrever nem
+        // ao revisar: `$psi.ArgumentList` simplesmente vem NULA em 5.1, e o `.Add()` estoura
+        // na cara de quem esta instalando, no meio do provisionamento.
+        //
+        // Foi exatamente o que aconteceu na v2.0.0. Este teste existe para nao acontecer de novo.
+        const proibidos = [
+            [/\$\w+\.ArgumentList\s*\.\s*Add\b/, "ProcessStartInfo.ArgumentList so existe no .NET Core; monte a string com Format-Argument"],
+            [/\[System\.IO\.Path\]::GetRelativePath/, "GetRelativePath so existe no .NET Core"],
+            [/ConvertFrom-Json[^\n]*-AsHashtable/, "-AsHashtable so existe no PowerShell 6+"],
+            [/Get-Content[^\n]*-AsByteStream/, "-AsByteStream so existe no PowerShell 6+; em 5.1 e -Encoding Byte"],
+            [/Split-Path[^\n]*-LeafBase/, "-LeafBase so existe no PowerShell 6+"],
+            [/\?\?/, "o operador ?? so existe no PowerShell 7+"]
+        ];
+
+        for (const arquivo of ["StreamFix-Installer.ps1", "StreamFix-Installer-GUI.ps1", "Verifica-Tunel.ps1"]) {
+            const fonte = readFileSync(join(RAIZ, "installer", arquivo), "utf8");
+            // Comentario explicando por que algo NAO se usa nao conta como uso.
+            const codigo = fonte.split("\n").filter(l => !/^\s*#/.test(l)).join("\n");
+            for (const [padrao, porque] of proibidos) {
+                assert.ok(!padrao.test(codigo), `${arquivo}: ${porque}`);
+            }
+        }
+    });
+
+    test("a chave da saida tem padrao, senao quem instala pela janela fica sem a defesa", () => {
+        // A janela nao tem onde digitar a chave, e e por ela que quase todo mundo instala. Sem
+        // padrao, o unico que ficaria protegido contra substituicao de resposta seria quem usa
+        // o terminal e lembra de passar -ExitKey. O padrao casa com o do -ExitUrl: os dois
+        // descrevem a mesma saida.
+        const url = /\[string\]\s*\$ExitUrl\s*=\s*'([^']*)'/.exec(INSTALADOR);
+        const chave = /\[string\]\s*\$ExitKey\s*=\s*'([^']*)'/.exec(INSTALADOR);
+
+        assert.ok(url && chave, "faltou um dos dois parametros");
+        assert.match(chave[1], /^[A-Za-z0-9+/]{43}=$/, "o padrao do ExitKey nao e uma chave WireGuard");
+        assert.ok(url[1].length > 0, "o ExitUrl precisa de padrao para o ExitKey fazer sentido");
+    });
+
     test("o instalador nao se auto-eleva", () => {
         // Medido em 11/09: o CLI do WireSock (list, status, import, delete, connect) funciona
         // sem elevacao. A unica coisa que precisa e a instalacao do WireSock, e quem levanta o

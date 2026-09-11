@@ -42,8 +42,13 @@ param(
 
     # A chave publica esperada da saida. O registro nao tem TLS (a saida e um IP, sem dominio),
     # entao esta chave e o que impede substituicao de resposta -- alguem no meio do caminho
-    # devolvendo a propria saida e levando a midia de quem instalou. Vazia = sem conferencia.
-    [string] $ExitKey = '',
+    # devolvendo a propria saida e levando a midia de quem instalou.
+    #
+    # Tem padrao, e o padrao casa com o $ExitUrl acima: os dois descrevem a MESMA saida. Sem
+    # padrao, quem instala pela janela (que nao tem onde digitar isto) ficaria sem a unica
+    # defesa que existe sem TLS -- e e por ali que quase todo mundo instala. Quem aponta para
+    # outra saida troca os dois juntos. Vazia desliga a conferencia.
+    [string] $ExitKey = 'fbv+rSWSp36QfVdcNvPHdtEFzeOvCrzB1cyNBfGSvWY=',
 
     # Nome do perfil no WireSock. Muda junto com o nome do arquivo .conf, que e de onde o
     # WireSock tira o nome de verdade.
@@ -1086,14 +1091,45 @@ function Read-Invite {
 
 # Chama o provisionador. O convite vai por stdin de proposito: argumento de linha de comando
 # aparece na lista de processos para qualquer usuario da maquina.
+# Monta um argumento para a linha de comando do Windows.
+#
+# `ProcessStartInfo.ArgumentList` -- que aceitaria os argumentos um a um, sem isto -- so existe
+# no .NET Core. O instalador roda em Windows PowerShell 5.1, que e .NET Framework, e la a
+# propriedade vem nula: `.Add()` estoura com "nao e possivel chamar um metodo em uma expressao
+# de valor nulo". Sobra montar a string a mao.
+#
+# As regras sao as do CommandLineToArgvW, e elas nao sao obvias: barra invertida so escapa
+# quando vem antes de aspas, e as que precedem a aspa de fechamento precisam ser dobradas.
+# Importa aqui porque os caminhos passam por %TEMP%, que pode ter espaco no nome do usuario.
+function Format-Argument([string] $valor) {
+    if ($valor -ne '' -and $valor -notmatch '[\s"]') { return $valor }
+
+    $sb = New-Object Text.StringBuilder
+    [void] $sb.Append('"')
+    $barras = 0
+    foreach ($ch in $valor.ToCharArray()) {
+        if ($ch -eq '\') { $barras++; continue }
+        if ($ch -eq '"') {
+            [void] $sb.Append('\' * ($barras * 2 + 1)).Append('"')
+        } else {
+            [void] $sb.Append('\' * $barras).Append($ch)
+        }
+        $barras = 0
+    }
+    [void] $sb.Append('\' * ($barras * 2)).Append('"')
+    return $sb.ToString()
+}
+
 function Invoke-Provisioner($provisionerDir, $invite, $url, $exitKey, $confPath) {
     $script = Join-Path $provisionerDir 'installer\provisiona.mjs'
-    $args = @($script, '--url', $url, '--arquivo', $confPath)
-    if ($exitKey) { $args += @('--chave-da-saida', $exitKey) }
+
+    # Nao chamar isto de $args: dentro de uma funcao esse nome ja e do PowerShell.
+    $argumentos = @($script, '--url', $url, '--arquivo', $confPath)
+    if ($exitKey) { $argumentos += @('--chave-da-saida', $exitKey) }
 
     $psi = New-Object Diagnostics.ProcessStartInfo
     $psi.FileName = 'node'
-    foreach ($a in $args) { $psi.ArgumentList.Add($a) }
+    $psi.Arguments = ($argumentos | ForEach-Object { Format-Argument $_ }) -join ' '
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
