@@ -672,31 +672,98 @@ Isso reduz muito o pedido feito a quem só quer assistir, e também o consumo da
 saída: o tráfego de vídeo do espectador deixa de atravessar a VPS depois dos primeiros
 segundos.
 
-**Ainda em aberto (F2):** se um espectador brasileiro sem túnel derruba a entrega para a sala
-inteira ou apenas para si. Com um espectador só, 12c e 12d não distinguem os dois casos. O
-teste exige uma terceira pessoa entrando sem túnel enquanto outra assiste com túnel.
+**F2, respondido em 12f:** a negação é por espectador. Um brasileiro sem túnel vê o 2012 e
+não afeta quem está assistindo.
+
+## 12f. A negação é por espectador, não pela sala
+
+Teste de 11/09/2026 com três participantes simultâneos, o que nem 12c nem 12d conseguiam ter.
+
+### Montagem
+
+- **Emissor**: Windows, túnel para Santiago, `AllowedApps = Discord`, StreamFix desligado.
+- **Espectador A**: WSL2, túnel para Santiago, entrou com o túnel de pé.
+- **Espectador B**: terceira pessoa, no Brasil, **sem túnel, sem VPN e com o StreamFix
+  desligado** — a exigência do StreamFix desligado é consequência direta do confundidor
+  descoberto em 12d, sem a qual B não seria um brasileiro limpo.
+
+A ordem importa, porque cada entrada é um evento de revalidação separado: primeiro A, com a
+entrega confirmada saudável, e só depois B.
+
+### O resultado
+
+| t | espectadores | `framesEncoded` | `bytesSent` | fps |
+|---|---|---|---|---|
+| 0 s | 1 (só A) | 3.388 | 13.119.001 | 61 |
+| 47 s | **2** (B entra) | 6.225 | 19.176.644 | 59 |
+| 93 s | 2 | 8.940 | 20.865.017 | 60 |
+
+**Nenhuma parada em 93 amostras.** Confirmado nas duas telas: B tomou o erro 2012 e não viu
+nada; A continuou vendo a transmissão normalmente.
+
+**Conclusão: o gate recusa a entrega àquele espectador, e só a ele.** Um espectador
+despreparado não derruba a sala.
+
+### Consequência de produto
+
+O produto não depende de quem clica na transmissão, que é a única coisa que quem transmite não
+controla. Quem se preparou assiste; quem não se preparou vê o 2012, e nada mais acontece.
+
+### Um dado que desmonta uma suposição
+
+**O espectador negado aparece na contagem.** `getViewerIds()` foi de 1 para 2 mesmo com B sem
+receber um byte. A contagem diz quem **clicou**, não quem está **recebendo** — mais uma razão
+para o SessionMonitor decidir por contadores de entrega e não por ela.
+
+### Uma queda de taxa, explicada
+
+A taxa caiu de ~2.135 para ~622 bytes por quadro depois da entrada de B, com o fps constante.
+A hipótese incômoda seria o Discord degradando a qualidade por causa de um receptor ruim. Não
+é: o conteúdo compartilhado mudou para uma tela mais parada no mesmo período, confirmado pelo
+usuário, e tela parada codifica barato. Registrado porque a leitura errada teria mudado o que
+se conta às pessoas sobre o custo de ter alguém negado na sala.
 
 ## 13. Consequências de produto
 
-O diferencial do StreamFix era não rotear a mídia: gateway pela saída, todo o resto direto,
-na velocidade normal. Esse diferencial é exatamente o que o bloqueio novo ataca.
+> Reescrita em 11/09/2026. A versão anterior listava três direções possíveis e uma pergunta em
+> aberto. As seções 12d a 12f fecharam as duas coisas.
 
-Direções possíveis, sem ordem de preferência definida:
+**O modelo do gate, completo:**
 
-1. **Túnel só para a mídia do Discord.** Preserva boa parte da proposta — navegação,
-   downloads e jogos seguem diretos, só a mídia de voz/vídeo do Discord passa pela saída.
-   Exige transporte UDP: SOCKS5 com UDP ASSOCIATE (raro em proxies públicas) ou WireGuard.
-   Precisa de teste: verificar se rotear apenas a mídia, mantendo o resto direto, é
-   suficiente — a reprodução com VPN roteou tudo e não distingue isso.
-2. **Assumir o escopo reduzido.** O plugin continua entregando o destravamento do cliente
-   (Trava 1, que segue funcionando) e o roteamento de gateway, e o README passa a documentar
-   que, desde 03/09, o Go Live exige também rotear a mídia.
-3. **Não fazer nada no plugin** e documentar a regressão para os usuários, que hoje não têm
-   explicação para a quebra.
+| | quando é avaliado | o que acontece depois |
+|---|---|---|
+| IP de quem transmite | quando a sessão de entrega nasce | sobrevive à queda do túnel (fato 2) |
+| IP de quem assiste | quando essa pessoa entra | sobrevive à queda do túnel (12e) |
 
-Questão em aberto relevante para decidir: com VPN ligada, o plugin ainda é necessário? Se a
-VPN sozinha resolve as duas travas, o valor do plugin nesse cenário precisa ser
-reconsiderado. Não testado.
+E a recusa é **individual**: um espectador sem túnel vê o 2012 sozinho, sem afetar quem já
+está assistindo (12f).
+
+**A pergunta que estava em aberto — "com VPN ligada, o plugin ainda é necessário?" — foi
+respondida por acidente em 12d.** A transmissão daquela noite funcionou com o StreamFix
+desligado nos dois lados. Com o túnel de pé, o cliente enxerga um IP estrangeiro e a Trava 1
+nunca chega a engatar. **O plugin, como ele existe hoje, não é necessário.**
+
+Isso não elimina o produto; move ele de lugar. O que um túnel de prateleira não entrega:
+
+- **Escopo.** Uma VPN comum leva a máquina inteira. O split tunnel por aplicativo deixa jogo,
+  navegação e download diretos.
+- **Momento.** Quem só assiste não precisa de túnel permanente (12e). Ligar por segundos, na
+  hora de entrar, é coisa que só quem está dentro do cliente sabe fazer.
+- **Diagnóstico.** Saber que `framesEncoded` travou com espectador assistindo exige estar
+  dentro do Discord. De fora, tudo o que se vê é uma transmissão "no ar" — que é exatamente o
+  que ela parece estar quando foi recusada. Essa falha silenciosa custou duas noites a este
+  projeto antes de ser instrumentada.
+- **Porteiro.** Sem túnel, a transmissão sobe, aparece "AO VIVO" e só morre quando alguém
+  entra. Bloquear antes, com o motivo na tela, é a diferença entre um produto e uma armadilha.
+
+O desenho que sai disso está em
+`docs/superpowers/specs/2026-09-11-tunel-nas-duas-pontas-design.md`.
+
+**O que ainda não foi medido**, e que não bloqueia o desenho:
+
+- Se subir o túnel no meio de uma call causa soluço na voz de quem já está conversando.
+- Quais faixas de IP servem cada região de transmissão, necessário para o refinamento de voz
+  direta (seção 7 da spec).
 
 ## Apêndice: como reproduzir a instrumentação
 

@@ -1,7 +1,7 @@
 # StreamFix — túnel nas duas pontas
 
 **Data:** 11/09/2026
-**Estado:** desenho aprovado, com um ponto em aberto marcado (F2)
+**Estado:** desenho aprovado, sem pontos em aberto
 **Substitui:** `2026-09-08-tunel-momentaneo-design.md`, cuja premissa central foi refutada
 
 ---
@@ -293,28 +293,28 @@ falha deste projeto — o teste que passa medindo outra coisa.
 
 ---
 
-## 9. Em aberto
+## 9. F2, respondido
 
-### F2 — um espectador sem túnel derruba a entrega para a sala inteira?
+A pergunta que nasceu aberta nesta spec — *um espectador sem túnel derruba a entrega para a
+sala inteira?* — foi respondida em 11/09/2026 com três participantes simultâneos. Ver a seção
+12f da pesquisa.
 
-Com um espectador só, nem 12c nem 12d distinguem "a entrega morreu" de "a entrega morreu para
-aquela pessoa". O teste exige três participantes simultâneos: quem transmite, um espectador com
-túnel e um sem.
+**A negação é por espectador.** O brasileiro sem túnel tomou o erro 2012 e não viu nada; o
+espectador tunelado continuou vendo a transmissão, e o encoder seguiu a 60 fps sem uma parada
+em 93 amostras.
 
-**Se derrubar só para quem não tem túnel**, o desenho acima está completo: quem se preparou
-assiste, quem não se preparou vê o erro 2012, e nada mais acontece.
+Isso confirma o desenho como escrito, sem alteração:
 
-**Se derrubar para todos**, o produto passa a depender de quem clica na transmissão — que é
-justamente o que ninguém controla. As saídas conhecidas são todas ruins, e a escolha entre elas
-não deve ser feita antes de o fato existir:
+- A seção 6 fica como está. A linha "entrada em transmissão sem túnel → desiste da entrada, com
+  aviso" continua certa, e agora com a garantia de que, se alguém escapar do porteiro, o
+  estrago é só dele.
+- O produto **não** passa a depender de quem clica na transmissão, que é justamente o que quem
+  transmite não controla.
 
-- transmitir só em servidores fechados, onde todo mundo instalou;
-- o monitor detectar e a pessoa que transmite recriar a transmissão, sabendo que vai cair de
-  novo assim que o mesmo espectador voltar;
-- aceitar e documentar.
-
-**O que muda nesta spec:** só a seção 6, linha da entrada sem túnel, e possivelmente a 4.3.
-O resto não depende do resultado.
+Um achado colateral que afeta a unidade `coletor`: **o espectador negado aparece na contagem
+de espectadores.** `getViewerIds()` foi de 1 para 2 com o negado sem receber um byte. A
+contagem diz quem clicou, não quem recebe — o que reforça a decisão, já embutida no monitor, de
+concluir por contadores de entrega e nunca por ela.
 
 ---
 
