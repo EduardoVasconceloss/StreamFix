@@ -152,14 +152,40 @@ if ($detectedRoot) {
 }
 
 # --- saida de rede ---
+# Quem ja tem o tunel montado NAO precisa de convite: o instalador detecta o perfil e pula o
+# provisionamento inteiro. Exigir o convite aqui mandaria essa pessoa cacar um codigo que nao
+# vai ser usado -- e atualizar o plugin passa por esta janela toda vez.
+#
+# A checagem e a mesma que o motor faz (Get-ExistingTunnel), so que sem precisar dele: a UI
+# roda antes de o motor ser carregado no runspace.
+function Test-TunnelAlreadySetUp {
+    foreach ($cli in @(
+        (Join-Path $env:ProgramFiles 'WireSock Secure Connect\command-line\wiresock-connect-cli.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'WireSock Secure Connect\command-line\wiresock-connect-cli.exe')
+    )) {
+        if (-not $cli -or -not (Test-Path -LiteralPath $cli)) { continue }
+        try {
+            $lista = & $cli list 2>&1 | Out-String
+            if ($lista -match [regex]::Escape('streamfix-santiago')) { return $true }
+        } catch { }
+    }
+    return $false
+}
+
+$script:TunnelAlreadySetUp = Test-TunnelAlreadySetUp
+
 $inviteBox = New-Object System.Windows.Forms.GroupBox
-$inviteBox.Text = 'Seu convite para a saida'
+$inviteBox.Text = if ($script:TunnelAlreadySetUp) { 'Seu convite para a saida (nao precisa)' } else { 'Seu convite para a saida' }
 $inviteBox.Location = New-Object System.Drawing.Point(0, 105)
 $inviteBox.Size = New-Object System.Drawing.Size(505, 120)
 $optionsPage.Controls.Add($inviteBox)
 
 $inviteHintLabel = New-Object System.Windows.Forms.Label
-$inviteHintLabel.Text = 'Cole o convite que voce recebeu de quem administra a saida. Ele vale poucos usos e nao da acesso a mais nada. Sem ele nao da para montar o tunel.'
+$inviteHintLabel.Text = if ($script:TunnelAlreadySetUp) {
+    'Voce ja tem o tunel montado nesta maquina, entao pode deixar em branco -- so o plugin sera atualizado. Preencha apenas se quiser refazer o tunel do zero.'
+} else {
+    'Cole o convite que voce recebeu de quem administra a saida. Ele vale poucos usos e nao da acesso a mais nada. Sem ele nao da para montar o tunel.'
+}
 $inviteHintLabel.Location = New-Object System.Drawing.Point(15, 25)
 $inviteHintLabel.Size = New-Object System.Drawing.Size(470, 40)
 $inviteHintLabel.ForeColor = [System.Drawing.Color]::DimGray
@@ -380,10 +406,12 @@ function Start-Install {
     $modChoice = if ($radioDownloadVencord.Checked) { 'Vencord' } else { 'Equicord' }
     $downloadFresh = -not ($detectedRoot -and $radioUseExisting.Checked)
 
-    # Recusar aqui, antes de comecar, e o ponto: sem convite a instalacao vai ate o meio e
-    # morre na hora de montar o tunel, deixando a pessoa com o mod baixado e nada funcionando.
+    # Recusar aqui, antes de comecar, e o ponto -- mas so para quem realmente precisa: sem
+    # convite E sem tunel, a instalacao iria ate o meio e morreria na hora de montar o tunel,
+    # deixando a pessoa com o mod baixado e nada funcionando. Quem ja tem tunel nao precisa de
+    # convite nenhum, e barrar essa pessoa a mandaria cacar um codigo que ninguem vai usar.
     $invite = $inviteTextBox.Text.Trim()
-    if (-not $invite) {
+    if (-not $invite -and -not $script:TunnelAlreadySetUp) {
         [System.Windows.Forms.MessageBox]::Show('Cole o convite que voce recebeu de quem administra a saida. Sem ele nao da para montar o tunel.', 'StreamFix', 'OK', 'Warning') | Out-Null
         return
     }
