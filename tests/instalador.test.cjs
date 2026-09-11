@@ -191,6 +191,47 @@ describe("provisionamento", () => {
         assert.equal(r.json.ok, true);
     });
 
+    test("o perfil gerado carrega ROTA, nao so a faixa interna", async () => {
+        // O bug que custou mais caro no projeto inteiro. O provisionador passava a `faixa` da
+        // saida (10.8.0.0/24) como AllowedIPs -- mas AllowedIPs sao os DESTINOS que o tunel
+        // carrega, e nenhum servidor do Discord esta na faixa interna.
+        //
+        // O resultado e o pior tipo de falha: tudo parece certo. O tunel conecta, o handshake
+        // fecha, o peer aparece na saida, o `status` diz "conectado", o AllowedApps e aceito --
+        // e nada roteia. Ate o "endereco externo" que o WireSock reporta continua sendo o de
+        // casa. Dois amigos instalaram e ficaram assim, e so o contador de bytes da saida
+        // (1,5 KiB de keepalive contra centenas de MiB) denunciou.
+        //
+        // Passou por semanas porque a unica maquina onde se testava de verdade usava um perfil
+        // escrito a mao, anterior ao provisionador.
+        const arquivo = join(pasta, "streamfix-rota.conf");
+        await provisionar(CONVITE_BOM, ["--arquivo", arquivo]);
+        const conf = readFileSync(arquivo, "utf8");
+
+        const rota = /^AllowedIPs = (.+)$/m.exec(conf);
+        assert.ok(rota, "o perfil saiu sem AllowedIPs");
+        assert.equal(rota[1].trim(), "0.0.0.0/0", "o tunel precisa carregar rota padrao");
+
+        // Dito de outro jeito, para o dia em que alguem for "arrumar" isto: uma faixa privada
+        // ali nao carrega o Discord a lugar nenhum.
+        assert.doesNotMatch(rota[1], /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/,
+            "faixa privada como AllowedIPs monta um tunel que nao carrega nada");
+    });
+
+    test("o perfil gerado resolve DNS dentro do tunel", async () => {
+        // Sem isto, quem esta no tunel resolve nomes pelo resolvedor do sistema, que sai por
+        // fora. O Discord usa GeoDNS: resolver do Brasil devolve servidor brasileiro mesmo com
+        // os pacotes saindo pelo Chile. O perfil que funciona desde o spike tem esta linha.
+        const arquivo = join(pasta, "streamfix-dns.conf");
+        await provisionar(CONVITE_BOM, ["--arquivo", arquivo]);
+        const conf = readFileSync(arquivo, "utf8");
+
+        const dns = /^DNS = (.+)$/m.exec(conf);
+        assert.ok(dns, "o perfil saiu sem DNS");
+        assert.ok(conf.indexOf("[Interface]") < conf.indexOf("DNS ="), "DNS vive no [Interface]");
+        assert.ok(conf.indexOf("DNS =") < conf.indexOf("[Peer]"));
+    });
+
     test("o perfil gerado leva o AllowedApps: sem ele o tunel levaria a maquina inteira", async () => {
         const arquivo = join(pasta, "streamfix-apps.conf");
         await provisionar(CONVITE_BOM, ["--arquivo", arquivo]);
@@ -319,6 +360,55 @@ describe("instalador", () => {
         assert.match(fn, /-log-level', 'info'/, "sem log info o CLI nao reporta os aplicativos");
         assert.match(fn, /AllowedApps/, "nao confere o split tunnel");
         assert.match(fn, /disconnect/, "tunel que subiu errado tem que ser derrubado");
+    });
+
+    test("quem sobe o tunel confere a ROTA, nao so os aplicativos", () => {
+        // As duas metades da configuracao do split tunnel: AllowedApps diz QUEM entra no
+        // tunel, AllowedIPs diz PARA ONDE. Por semanas so a primeira era conferida, e um
+        // perfil com o app certo e a rota errada passava como bom -- conectava, apertava a
+        // mao, e nao carregava nada.
+        const fn = /function Connect-Tunnel\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
+        assert.match(fn, /AllowedIPs/, "nao confere a rota");
+        assert.match(fn, /0\.0\.0\.0\/0/, "nao exige rota padrao");
+    });
+
+    test("o diagnostico mostra e confere as duas metades", () => {
+        // O relatorio de dois amigos trazia a linha "AllowedIPs=10.8.0.0/24" -- a causa exata
+        // do problema -- e o diagnostico a descartava no filtro, imprimindo "[OK]" logo abaixo.
+        const diag = readFileSync(join(RAIZ, "installer", "Diagnostico-Tunel.ps1"), "utf8");
+        assert.match(diag, /Allowed\(IPs\|Apps\)/, "o filtro ainda deixa uma das duas de fora");
+        assert.match(diag, /AllowedIPs=\(/, "nao extrai a rota para julgar");
+        assert.match(diag, /0\.0\.0\.0\/0/, "nao sabe qual rota e a certa");
+    });
+
+    test("consertar um perfil parado nao derruba o tunel que esta no ar", () => {
+        // `disconnect` nao escolhe perfil: derruba o que estiver conectado. Reparar um perfil
+        // qualquer nao pode desligar o tunel que a pessoa esta usando naquele momento.
+        // Comentario que explica a regra nao e a regra: so o codigo conta. Sem tirar os
+        // comentarios, o indexOf abaixo casa com a propria frase que documenta a checagem.
+        const fn = /function Repair-TunnelProfile\([\s\S]*?\n\}/.exec(INSTALADOR)[0]
+            .split("\n").filter(l => !/^\s*#/.test(l)).join("\n");
+
+        const corte = fn.indexOf("disconnect");
+        assert.ok(corte > 0, "o reparo nao derruba nada?");
+        assert.match(fn.slice(0, corte), /status/, "derruba sem antes conferir qual perfil esta no ar");
+    });
+
+    test("o reparo preserva a chave: ele existe para nao gastar convite", () => {
+        // Reprovisionar geraria chave nova, gastaria um uso do convite e deixaria o peer
+        // antigo ocupando endereco na saida. A privada ja esta guardada no WireSock, entao o
+        // reparo so reescreve a linha errada e reimporta.
+        const fn = /function Repair-TunnelProfile\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
+        assert.match(fn, /export/, "sem exportar nao da para preservar a chave");
+        assert.ok(!/Invoke-Provisioner|Read-Invite/.test(fn), "o reparo nao pode provisionar de novo");
+        assert.ok(fn.includes("finally"), "o perfil exportado tem a chave privada e precisa morrer");
+    });
+
+    test("reinstalar conserta um perfil com a rota errada", () => {
+        // E o que faz quem ja instalou no periodo do bug se recuperar sem fazer nada especial.
+        const fn = /function Install-Tunnel\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
+        assert.match(fn, /Repair-TunnelProfile/, "reinstalar nao conserta perfil quebrado");
+        assert.match(fn, /rota -ne '0\.0\.0\.0\/0'/, "nao detecta a rota errada");
     });
 
     test("o log do connect, que carrega o caminho do perfil, e apagado sempre", () => {

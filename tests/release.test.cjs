@@ -5,9 +5,9 @@
  * upload para a release. Nada liga uma lista a outra, entao esquecer uma e silencioso: o
  * arquivo simplesmente nao aparece na release, e so quem tenta usar descobre.
  *
- * Foi o que aconteceu com o `Verifica-Tunel.ps1`. O README manda rodar `.\Verifica-Tunel.ps1`
- * desde a fase 8, e ele nunca foi publicado -- quem seguisse a instrucao nao acharia o arquivo.
- * O mesmo ia acontecer com o diagnostico.
+ * Foi o que aconteceu com o `Verifica-Tunel.ps1`. O README manda roda-lo desde a fase 8, e ele
+ * nunca foi publicado -- quem seguisse a instrucao nao acharia o arquivo. O mesmo ia acontecer
+ * com o diagnostico.
  */
 
 const assert = require("node:assert/strict");
@@ -16,21 +16,46 @@ const { join, resolve } = require("node:path");
 const { test } = require("node:test");
 
 const RAIZ = resolve(__dirname, "..");
-const FLUXO = readFileSync(join(RAIZ, ".github", "workflows", "build-installer.yml"), "utf8");
-const README = readFileSync(join(RAIZ, "README.md"), "utf8");
+
+/**
+ * Lido com finais de linha normalizados.
+ *
+ * O git reescreve para CRLF no checkout em Windows. Sem normalizar, o mesmo arquivo casa numa
+ * maquina e nao casa na outra -- e o teste passaria a nao guardar nada justamente onde ele roda.
+ */
+function lerNormalizado(...caminho) {
+    return readFileSync(join(RAIZ, ...caminho), "utf8").split(/\r?\n/).join("\n");
+}
+
+const FLUXO = lerNormalizado(".github", "workflows", "build-installer.yml");
+const README = lerNormalizado("README.md");
 
 /** O `SHA256SUMS.txt` e produzido pelo build, nao versionado: fica fora das comparacoes. */
 const GERADO = "SHA256SUMS.txt";
 
-function lista(trecho) {
+function arquivosEm(trecho) {
     return [...trecho.matchAll(/installer\/([A-Za-z0-9._-]+)/g)]
         .map(m => m[1])
         .filter(nome => nome !== GERADO);
 }
 
-const HASHES = lista(/\$files = @\(([\s\S]*?)\n\s*\)/.exec(FLUXO)[1]);
-const ARTEFATO = lista(/name: streamfix-installer[\s\S]*?path: \|([\s\S]*?)\n\n/.exec(FLUXO)[1]);
-const RELEASE = lista(/gh release upload[\s\S]*?--clobber/.exec(FLUXO)[0]);
+/**
+ * Recorta um passo do workflow pelo nome.
+ *
+ * Recortar por linha em branco era fragil: bastava uma mudanca de formatacao para a lista sair
+ * vazia e o teste calar. O nome do passo e o que de fato delimita.
+ */
+function passo(nome) {
+    const i = FLUXO.indexOf(nome);
+    assert.notEqual(i, -1, `o passo "${nome}" sumiu do workflow`);
+    const resto = FLUXO.slice(i + nome.length);
+    const fim = resto.search(/\n {6}- name:/);
+    return fim < 0 ? resto : resto.slice(0, fim);
+}
+
+const HASHES = arquivosEm(passo("Hash the release files"));
+const ARTEFATO = arquivosEm(passo("Upload build artifacts"));
+const RELEASE = arquivosEm(passo("Attach to release"));
 
 test("o build acha os tres blocos de arquivos", () => {
     // Se o workflow for reescrito e estas extracoes pararem de casar, os testes abaixo
@@ -72,12 +97,11 @@ test("todo .ps1 do instalador tem como ser rodado por quem nao mexe em politica 
     // maquinas. Quem precisa de diagnostico ja esta com um problema e nao merece dois: todo
     // script feito para o usuario final precisa de um .bat que o chame com -ExecutionPolicy
     // Bypass, ou de ser chamado por outro script que ja passou por isso.
-    const comLancador = ["StreamFix-Installer.ps1", "Diagnostico-Tunel.ps1"];
-    for (const ps1 of comLancador) {
+    for (const ps1 of ["StreamFix-Installer.ps1", "Diagnostico-Tunel.ps1"]) {
         const bat = ps1.replace(/\.ps1$/, ".bat");
         assert.ok(HASHES.includes(bat), `${ps1} e publicado sem o ${bat} que o roda`);
 
-        const fonte = readFileSync(join(RAIZ, "installer", bat), "utf8");
+        const fonte = lerNormalizado("installer", bat);
         assert.match(fonte, /-ExecutionPolicy Bypass/, `${bat} nao contorna a politica de execucao`);
     }
 });

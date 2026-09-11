@@ -140,7 +140,7 @@ $status = (& $cli status 2>&1 | Out-String)
 foreach ($l in ($status -split "`r?`n")) { if ($l.Trim()) { Nota (Limpar $l.Trim()) } }
 
 # ------------------------------------------------------------------ 4. o que entra no tunel
-Titulo 'quais aplicativos o WireSock aceitou'
+Titulo 'o que o WireSock aplicou'
 
 if ($SemReconectar) {
     Nota 'Pulado (-SemReconectar). So o `connect` reporta isto, e ele cala quando ja esta de pe.'
@@ -162,19 +162,37 @@ if ($SemReconectar) {
         Remove-Item -LiteralPath $out, $err -Force -ErrorAction SilentlyContinue
     }
 
-    $linhas = @($log -split "`r?`n" | Where-Object { $_ -match 'AllowedApps' })
-    if ($linhas) {
+    # **As duas linhas importam, e por muito tempo esta secao olhava so uma.** O WireSock
+    # reporta AllowedIPs (quais destinos entram no tunel) e AllowedApps (quais programas). Um
+    # perfil com o app certo e a rota errada conecta, aperta a mao, e nao carrega nada -- e o
+    # diagnostico dizia "[OK]" com a prova do problema uma linha acima, descartada pelo filtro.
+    $linhas = @($log -split "`r?`n" | Where-Object { $_ -match 'Allowed(IPs|Apps)' })
+    if (-not $linhas) {
+        Ruim 'O WireSock nao declarou split tunnel nenhum.'
+        Nota 'Ou o perfil nao tem as diretivas, ou elas foram descartadas. Nao deixe assim:'
+        Nota 'sem AllowedApps, o tunel leva a MAQUINA INTEIRA, nao so o Discord.'
+    } else {
         foreach ($l in $linhas) { Nota (Limpar $l.Trim()) }
+
+        $rota = $null
+        if ($log -match 'AllowedIPs=([^"\r\n]+)') { $rota = $Matches[1].Trim() }
+
+        if (-not $rota) {
+            Ruim 'O WireSock nao declarou AllowedIPs.'
+        } elseif ($rota -eq '0.0.0.0/0') {
+            Bom 'O tunel carrega rota padrao -- os destinos do Discord entram nele.'
+        } else {
+            Ruim "O tunel so carrega $rota, e nenhum servidor do Discord esta nessa faixa."
+            Nota 'E por isso que ele conecta e nada funciona. Rode o instalador de novo:'
+            Nota 'ele conserta o perfil sem gerar chave nova nem gastar convite.'
+        }
+
         if ($log -match 'AllowedApps[^\r\n]*Discord') {
             Bom 'O WireSock aceitou o Discord no tunel.'
         } else {
             Ruim 'O WireSock NAO aceitou o Discord -- o perfil lista outro aplicativo.'
-            Nota 'Refaca o perfil: .\StreamFix-Installer.ps1 -Reprovision'
+            Nota 'Rode o instalador de novo para refazer o perfil.'
         }
-    } else {
-        Ruim 'O WireSock nao declarou split tunnel nenhum.'
-        Nota 'Ou o perfil nao tem a diretiva, ou ela foi descartada. Nao deixe o tunel assim:'
-        Nota 'sem ela, o tunel leva a MAQUINA INTEIRA, nao so o Discord.'
     }
 }
 

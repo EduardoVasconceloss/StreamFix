@@ -1062,12 +1062,14 @@ function Get-ExistingTunnel($cli, $profile) {
         if (-not (Test-Path -LiteralPath $file)) { return $null }
 
         $endpoint = $null
+        $rota = $null
         foreach ($line in (Get-Content -LiteralPath $file)) {
-            if ($line -match '^\s*Endpoint\s*=\s*(\S+)\s*$') { $endpoint = $Matches[1]; break }
+            if ($line -match '^\s*Endpoint\s*=\s*(\S+)\s*$') { $endpoint = $Matches[1] }
+            if ($line -match '^\s*AllowedIPs\s*=\s*(.+?)\s*$') { $rota = $Matches[1] }
         }
         if (-not $endpoint) { return $null }
 
-        return [pscustomobject]@{ perfil = $profile; endpoint = $endpoint }
+        return [pscustomobject]@{ perfil = $profile; endpoint = $endpoint; rota = $rota }
     } finally {
         Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -1183,6 +1185,59 @@ function Import-TunnelProfile($cli, $confPath, $profile) {
     }
 }
 
+# Conserta um perfil que carrega a faixa interna em vez de rota.
+#
+# Ate 11/09 o provisionador escrevia `AllowedIPs = 10.8.0.0/24` -- a faixa de enderecos que a
+# saida distribui -- onde vao os DESTINOS que o tunel carrega. O resultado conecta, faz
+# handshake, aceita o AllowedApps e nao roteia nada: nenhum servidor do Discord esta nessa
+# faixa. Quem instalou nesse periodo tem um perfil assim.
+#
+# Consertar no lugar em vez de provisionar de novo NAO e refinamento: reprovisionar gera chave
+# nova, gasta um uso do convite e deixa o peer antigo ocupando endereco na saida. A chave
+# privada ja esta guardada no WireSock, entao da para reescrever so a linha errada.
+function Repair-TunnelProfile($cli, $profile) {
+    Write-Warn "O perfil $profile foi criado com a rota errada e nao carrega nada."
+    Write-Step 'Consertando sem gerar chave nova nem gastar convite'
+
+    $dir = Join-Path $env:TEMP "streamfix-fix-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+    $file = Join-Path $dir "$profile.conf"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    try {
+        & $cli export $profile $file 2>&1 | Out-Null
+        if (-not (Test-Path -LiteralPath $file)) { Write-Warn 'Nao consegui exportar o perfil.'; return $false }
+
+        $linhas = @(Get-Content -LiteralPath $file)
+        $saida = New-Object Collections.Generic.List[string]
+        $temDns = $false
+        foreach ($l in $linhas) {
+            if ($l -match '^\s*AllowedIPs\s*=') { $saida.Add('AllowedIPs = 0.0.0.0/0'); continue }
+            if ($l -match '^\s*DNS\s*=') { $temDns = $true }
+            $saida.Add($l)
+            # O DNS entra logo depois do Address, dentro do [Interface]. Sem ele, quem esta no
+            # tunel resolve pelo resolvedor de casa, e o GeoDNS do Discord devolve servidor
+            # brasileiro mesmo com os pacotes saindo pelo Chile.
+            if (-not $temDns -and $l -match '^\s*Address\s*=') { $saida.Add('DNS = 1.1.1.1'); $temDns = $true }
+        }
+
+        Set-Content -LiteralPath $file -Value $saida -Encoding UTF8
+
+        # Derrubar so se o que esta no ar for este perfil: `disconnect` nao escolhe, e
+        # consertar um perfil parado nao pode desligar o tunel que a pessoa esta usando.
+        if ((& $cli status 2>&1 | Out-String) -match [regex]::Escape($profile)) {
+            & $cli disconnect 2>&1 | Out-Null
+        }
+        & $cli delete $profile 2>&1 | Out-Null
+        $out = (& $cli import $file 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0) { Write-Err "Nao consegui reimportar o perfil: $out"; return $false }
+
+        Write-Ok 'Perfil consertado: o tunel agora carrega o trafego do Discord.'
+        return $true
+    } finally {
+        # O arquivo exportado tem a chave privada dentro. Ele morre aqui, de qualquer jeito.
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Sobe o tunel, e confere que subiu.
 #
 # **Isto existe por um bug de verdade, nao por completude.** Sem conectar aqui, o instalador
@@ -1250,7 +1305,21 @@ function Connect-Tunnel($cli, $profile) {
             Write-Host '  Deixa-lo de pe mandaria TODO o seu trafego para a saida, nao so o Discord.' -ForegroundColor DarkGray
             return $false
         }
-        Write-Ok 'Tunel de pe, levando so o Discord.'
+
+        # A outra metade da configuracao, e ela nao pode ser esquecida: AllowedApps diz QUEM
+        # entra no tunel, AllowedIPs diz PARA ONDE. Com o app certo e a rota errada o tunel
+        # sobe, aperta a mao, e nao carrega nada -- foi assim que dois amigos ficaram com um
+        # "conectado" que nao servia para coisa nenhuma.
+        if ($log -match 'AllowedIPs=([^"\r\n]+)') {
+            $rota = $Matches[1].Trim()
+            if ($rota -ne '0.0.0.0/0') {
+                Write-Warn "O tunel subiu carregando so $rota, e o Discord nao esta nessa faixa."
+                Write-Host '  Ele nao vai servir para nada. Rode o instalador de novo para consertar o perfil.' -ForegroundColor DarkGray
+                return $false
+            }
+        }
+
+        Write-Ok 'Tunel de pe, levando so o Discord, com rota para tudo.'
         return $true
     }
 
@@ -1279,6 +1348,14 @@ function Install-Tunnel($url, $exitKey, $profile) {
         if ($existente) {
             Write-Ok "Tunel ja configurado no perfil $profile (saida $($existente.endpoint))"
             Write-Host '  Nao pedi convite nem gerei chave nova. Para refazer do zero: -Reprovision' -ForegroundColor DarkGray
+
+            # Rota que nao e padrao = perfil da epoca do bug. Consertar aqui e o que faz uma
+            # reinstalacao resolver o problema de quem ja instalou.
+            if ($existente.rota -ne '0.0.0.0/0') {
+                if (Repair-TunnelProfile $cli $profile) {
+                    $existente = Get-ExistingTunnel $cli $profile
+                }
+            }
 
             # Configurado nao quer dizer de pe. Se estiver fora, o Discord abriria pelo Brasil.
             $status = (& $cli status 2>&1 | Out-String)

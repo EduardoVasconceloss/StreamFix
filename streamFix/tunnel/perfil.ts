@@ -30,8 +30,24 @@ export interface DadosPerfil {
     mtu: number;
     /** Nomes de processo que entram no tunel. Sem caminho e sem `.exe`. */
     apps?: string[];
-    /** Destinos que o tunel carrega. `0.0.0.0/0` mais `AllowedApps` = "tudo, so para o Discord". */
+    /**
+     * Destinos que o tunel carrega. `0.0.0.0/0` mais `AllowedApps` = "tudo, so para o Discord".
+     *
+     * **Nao confundir com a faixa interna da saida.** Passar `10.8.0.0/24` aqui monta um tunel
+     * que conecta, faz handshake, aceita o AllowedApps -- e nao carrega nada, porque nenhum
+     * servidor do Discord esta nessa faixa. Foi o que aconteceu com todo perfil gerado ate
+     * 11/09: `status` dizia "conectado" e o endereco externo continuava sendo o de casa.
+     */
     destinos?: string;
+
+    /**
+     * Resolvedor que os aplicativos do tunel usam.
+     *
+     * Sem ele, quem esta no tunel resolve nomes pelo resolvedor do sistema, que sai por fora --
+     * e o Discord usa GeoDNS, entao resolver do Brasil devolve servidor brasileiro mesmo com os
+     * pacotes saindo pelo Chile. O perfil que funciona desde o spike tem `1.1.1.1`.
+     */
+    dns?: string;
     /** Segundos entre keepalives. Mantem o NAT aberto do lado de ca. */
     keepalive?: number;
 }
@@ -70,11 +86,14 @@ export function gerarPerfil(dados: DadosPerfil): string {
 
     const destinos = dados.destinos ?? "0.0.0.0/0";
     const keepalive = dados.keepalive ?? 25;
+    const dns = dados.dns ?? "1.1.1.1";
+    exigir("dns", dns);
 
     return [
         "[Interface]",
         `PrivateKey = ${dados.chavePrivada}`,
         `Address = ${dados.endereco}`,
+        `DNS = ${dns}`,
         `MTU = ${mtu}`,
         "",
         "[Peer]",

@@ -149,7 +149,14 @@ async function principal() {
         mtu,
         chavePublicaDoServidor: registro.dados.chavePublicaDoServidor,
         endpoint: registro.dados.endpoint,
-        destinos: registro.dados.faixa,
+        // NAO passar `faixa` aqui. Ela e a faixa interna da saida (10.8.0.0/24), o conjunto de
+        // enderecos que ela distribui -- nao o conjunto de destinos que o tunel deve carregar.
+        // Usa-la como AllowedIPs monta um tunel que conecta, faz handshake, aceita o
+        // AllowedApps, e nao carrega nada: nenhum servidor do Discord esta em 10.8.0.0/24.
+        //
+        // Todo perfil gerado ate 11/09 saiu assim. Nao apareceu em teste nenhum porque a unica
+        // maquina onde se testava de verdade usava um perfil escrito a mao, anterior a isto.
+        // O padrao de `gerarPerfil` -- 0.0.0.0/0 -- sempre esteve certo; o erro era sobrescreve-lo.
         apps
     });
 
