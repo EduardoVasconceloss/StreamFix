@@ -296,6 +296,28 @@ describe("instalador", () => {
         assert.match(finallyBlock, /Remove-Item -LiteralPath \$confPath/);
     });
 
+    test("instalar de novo nao provisiona de novo", () => {
+        // Atualizar o plugin passa por Install-Tunnel toda vez. Sem esta guarda, cada
+        // atualizacao geraria uma chave nova, gastaria um uso do convite e deixaria o peer
+        // anterior orfao ocupando endereco na saida -- e trocaria um perfil que funciona.
+        const fn = /function Install-Tunnel\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
+
+        const guarda = fn.indexOf("Get-ExistingTunnel");
+        const pedido = fn.indexOf("Read-Invite");
+        assert.ok(guarda > 0, "nao ha checagem de perfil existente");
+        assert.ok(pedido > 0, "nao ha pedido de convite");
+        assert.ok(guarda < pedido, "a checagem tem que vir antes de pedir o convite");
+        assert.match(fn, /if \(-not \$Reprovision\)/, "falta a valvula de escape");
+    });
+
+    test("o perfil exportado, que carrega a chave privada, e apagado sempre", () => {
+        // `export` escreve o perfil inteiro em disco. Se ele sobrar, a privada fica largada
+        // numa pasta temporaria do usuario.
+        const fn = /function Get-ExistingTunnel\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
+        assert.ok(fn.includes("finally"), "sem finally, uma falha deixaria a privada em disco");
+        assert.match(fn.slice(fn.indexOf("finally")), /Remove-Item -LiteralPath \$dir -Recurse/);
+    });
+
     test("o instalador nao se auto-eleva", () => {
         // Medido em 11/09: o CLI do WireSock (list, status, import, delete, connect) funciona
         // sem elevacao. A unica coisa que precisa e a instalacao do WireSock, e quem levanta o

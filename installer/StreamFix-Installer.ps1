@@ -47,7 +47,11 @@ param(
 
     # Nome do perfil no WireSock. Muda junto com o nome do arquivo .conf, que e de onde o
     # WireSock tira o nome de verdade.
-    [string] $TunnelProfile = 'streamfix-santiago'
+    [string] $TunnelProfile = 'streamfix-santiago',
+
+    # Provisiona de novo mesmo que ja exista um perfil com esse nome. Gera chave nova, gasta um
+    # uso do convite e deixa o peer antigo orfao na saida -- so use se o perfil atual quebrou.
+    [switch] $Reprovision
 )
 
 $ErrorActionPreference = 'Stop'
@@ -1029,6 +1033,34 @@ function Get-WireSock {
     return Install-WireSock
 }
 
+# Le o endpoint de um perfil que o WireSock ja tem.
+#
+# `export` escreve o perfil INTEIRO, com a chave privada dentro. Por isso o arquivo nasce numa
+# pasta temporaria, e o `finally` o apaga mesmo quando algo falha no meio. So a linha do
+# Endpoint sai daqui.
+function Get-ExistingTunnel($cli, $profile) {
+    $existing = & $cli list 2>&1 | Out-String
+    if ($existing -notmatch [regex]::Escape($profile)) { return $null }
+
+    $dir = Join-Path $env:TEMP "streamfix-lt-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+    $file = Join-Path $dir 'perfil.conf'
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    try {
+        & $cli export $profile $file 2>&1 | Out-Null
+        if (-not (Test-Path -LiteralPath $file)) { return $null }
+
+        $endpoint = $null
+        foreach ($line in (Get-Content -LiteralPath $file)) {
+            if ($line -match '^\s*Endpoint\s*=\s*(\S+)\s*$') { $endpoint = $Matches[1]; break }
+        }
+        if (-not $endpoint) { return $null }
+
+        return [pscustomobject]@{ perfil = $profile; endpoint = $endpoint }
+    } finally {
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Grava o provisionador e seus modulos num diretorio temporario, preservando o caminho
 # relativo. Get-RepoFile le do checkout local quando ha um, e baixa da release quando nao ha --
 # um caminho so para os dois casos.
@@ -1115,6 +1147,19 @@ function Install-Tunnel($url, $exitKey, $profile) {
     if (-not $profile) { $profile = $DefaultTunnelProfile }
 
     $cli = Get-WireSock
+
+    # Instalar de novo NAO pode provisionar de novo. Cada provisionamento gera uma chave nova,
+    # gasta um uso do convite e deixa o peer anterior orfao ocupando endereco na saida -- e
+    # atualizar o plugin passa por aqui toda vez. Quem ja tem perfil so precisa do plugin novo.
+    if (-not $Reprovision) {
+        $existente = Get-ExistingTunnel $cli $profile
+        if ($existente) {
+            Write-Ok "Tunel ja configurado no perfil $profile (saida $($existente.endpoint))"
+            Write-Host '  Nao pedi convite nem gerei chave nova. Para refazer do zero: -Reprovision' -ForegroundColor DarkGray
+            return $existente
+        }
+    }
+
     $invite = Read-Invite
     $provisionerDir = Save-Provisioner
 
