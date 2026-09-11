@@ -418,6 +418,21 @@ describe("instalador", () => {
         assert.ok(url[1].length > 0, "o ExitUrl precisa de padrao para o ExitKey fazer sentido");
     });
 
+    test("o diagnostico nunca imprime chave", () => {
+        // Ele existe para ser colado em conversa. Uma chave escapando ali e uma credencial
+        // publicada por alguem que so queria ajuda.
+        const diag = readFileSync(join(RAIZ, "installer", "Diagnostico-Tunel.ps1"), "utf8");
+        assert.match(diag, /function Limpar/, "falta a limpeza");
+        // Toda saida do CLI passa pela limpeza antes de virar texto na tela.
+        for (const m of diag.matchAll(/^\s*(?:foreach.*)?Nota \((.+)\)$/gm)) {
+            const arg = m[1];
+            if (/\$l|\$linha|status|log/.test(arg)) {
+                assert.match(arg, /Limpar/, `saida do CLI impressa sem limpar: ${arg}`);
+            }
+        }
+        assert.ok(!/export/.test(diag), "o diagnostico nunca deve exportar o perfil");
+    });
+
     test("o instalador nao se auto-eleva", () => {
         // Medido em 11/09: o CLI do WireSock (list, status, import, delete, connect) funciona
         // sem elevacao. A unica coisa que precisa e a instalacao do WireSock, e quem levanta o
