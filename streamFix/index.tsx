@@ -9,9 +9,15 @@ import { definePluginSettings } from "@api/Settings";
 import { Paragraph } from "@components/Paragraph";
 import { copyWithToast } from "@utils/discord";
 import { useAwaiter } from "@utils/react";
-import definePlugin, { OptionType } from "@utils/types";
+import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import { findStoreLazy } from "@webpack";
 import { Constants, MaskedLink, RestAPI, SearchableSelect, showToast, Toasts, UserStore } from "@webpack/common";
+
+import { aAmostra } from "./tunnel/coletor";
+import { EstadoTunel } from "./tunnel/controle";
+import { Estado, Veredito } from "./tunnel/monitor";
+import { observar } from "./tunnel/observador";
+import { aviso, decidir, hostDoEndpoint } from "./tunnel/porteiro";
 
 interface RegionStore {
     getPreferredRegion(): string | null;
@@ -43,6 +49,11 @@ const ApexExperimentStore: DiagnosticStore = findStoreLazy("ApexExperimentStore"
 const ApplicationStreamingStore: DiagnosticStore = findStoreLazy("ApplicationStreamingStore");
 const StreamRTCConnectionStore: DiagnosticStore = findStoreLazy("StreamRTCConnectionStore");
 const RTCConnectionStore: DiagnosticStore = findStoreLazy("RTCConnectionStore");
+
+const Native = VencordNative.pluginHelpers.StreamFix as PluginNative<typeof import("./native")>;
+
+/** O laco do monitor, enquanto houver transmissao nossa no ar. */
+let pararDeObservar: (() => void) | null = null;
 
 // O experimento que esconde o Go Live de quem esta no Brasil. O plugin nao o desarma mais --
 // ver docs/superpowers/plans/2026-09-11-tunel-nas-duas-pontas-plan.md, correcao 2. Continua
@@ -135,6 +146,21 @@ const settings = definePluginSettings({
         type: OptionType.COMPONENT,
         component: StreamRegionPicker,
         default: AUTOMATIC
+    },
+    exigirTunel: {
+        type: OptionType.BOOLEAN,
+        description: "Block Go Live when the tunnel is not carrying your media. Without it Discord refuses the stream anyway -- this just tells you why, before it happens.",
+        default: true
+    },
+    perfilDoTunel: {
+        type: OptionType.STRING,
+        description: "WireSock profile name. The installer writes it; change it only if you renamed the profile.",
+        default: "streamfix-santiago"
+    },
+    enderecoDaSaida: {
+        type: OptionType.STRING,
+        description: "host:port of your exit. Checked against what Discord reports, so a mismatch is caught before you stream.",
+        default: "159.112.151.37:39743"
     }
 });
 
@@ -189,6 +215,84 @@ function restoreRegion() {
     original = undefined;
 }
 
+/**
+ * Por onde o Discord diz que a midia esta saindo.
+ *
+ * O caminho e o mesmo do `tests/fixtures/capture.mjs`, de proposito: o que a captura grava e o
+ * que o plugin le. `null` quando nao ha conexao ainda -- nunca um endereco chutado.
+ *
+ * Prefere o contexto `stream`; cai para o `default`, que e a call. Nos dois o endereco e o
+ * mesmo quando o tunel esta de pe, e no clique do Go Live so o `default` existe.
+ */
+async function enderecoLocalDaMidia(): Promise<string | null> {
+    try {
+        const motor = (MediaEngineStore as unknown as { getMediaEngine(): { connections: Iterable<any>; } })
+            .getMediaEngine();
+        const conexoes = [...motor.connections];
+        const ordem = [...conexoes].sort((a, b) => (a?.context === "stream" ? -1 : 0) - (b?.context === "stream" ? -1 : 0));
+        for (const conexao of ordem) {
+            const stats = await conexao.getStats();
+            const endereco = stats?.transport?.localAddress;
+            if (typeof endereco === "string" && endereco.length > 0) return endereco;
+        }
+    } catch {
+        // Motor ausente, campo renomeado, prazo de 1s do getStats estourado. Tudo vira "nao sei",
+        // e quem decide o que fazer com isso e o porteiro.
+    }
+    return null;
+}
+
+/** Uma leitura crua para o coletor, no formato que as fixtures gravam. */
+async function leituraDaMidia() {
+    const motor = (MediaEngineStore as unknown as { getMediaEngine(): { connections: Iterable<any>; } })
+        .getMediaEngine();
+    const dados = [];
+    for (const conexao of [...motor.connections]) {
+        let stats: any = null;
+        try { stats = await conexao.getStats(); } catch { stats = null; }
+        const saida = stats?.rtp?.outbound ?? [];
+        dados.push({
+            context: conexao?.context ?? null,
+            captura: { tela: stats?.screenshare ?? null, camera: stats?.camera ?? null },
+            video: Array.isArray(saida) ? saida.filter((e: any) => e?.type === "video") : []
+        });
+    }
+
+    let espectadores: number | null = null;
+    try {
+        const meu = ask(ApplicationStreamingStore, "getCurrentUserActiveStream");
+        espectadores = meu == null || typeof meu === "string"
+            ? null
+            : ((ask(ApplicationStreamingStore, "getViewerIds", meu) as unknown[]) ?? []).length;
+    } catch {
+        espectadores = null;
+    }
+
+    return { espectadores, dados };
+}
+
+function comecarAObservar() {
+    if (pararDeObservar !== null) return;
+    let ultimo: string | null = null;
+
+    pararDeObservar = observar(
+        async () => leituraDaMidia(),
+        (veredito: Veredito, _estado: Estado) => {
+            const texto = aviso(veredito);
+            // Um aviso por mudanca de veredito, nao por amostra. Repetir a mesma frase a cada
+            // meio segundo seria ruido, e ruido a pessoa aprende a ignorar.
+            if (texto === null || texto === ultimo) { ultimo = texto; return; }
+            ultimo = texto;
+            showToast(texto, Toasts.Type.FAILURE);
+        }
+    );
+}
+
+function pararDeObservarAgora() {
+    pararDeObservar?.();
+    pararDeObservar = null;
+}
+
 function ask(store: object, method: string, ...args: unknown[]) {
     const fn = (store as DiagnosticStore)[method];
     if (typeof fn !== "function") return "metodo ausente";
@@ -231,7 +335,23 @@ async function buildReport() {
     lines.push(`regiao de call "${voiceRegion}" | regiao de stream "${streamRegion}"`);
 
     lines.push("", "== tunel ==");
-    lines.push("ainda nao implementado; ver o plano de 11/09/2026");
+    const { exigirTunel, perfilDoTunel, enderecoDaSaida } = settings.store;
+    const saidaEsperada = hostDoEndpoint(enderecoDaSaida);
+    let tunel: string;
+    try {
+        tunel = await Native.estadoDoTunel(perfilDoTunel);
+    } catch (error) {
+        tunel = `erro: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    const localAddress = await enderecoLocalDaMidia();
+    lines.push(`porteiro ${exigirTunel ? "ligado" : "desligado"} | perfil "${perfilDoTunel}"`);
+    lines.push(`o WireSock diz       ${tunel}`);
+    lines.push(`o Discord diz        ${localAddress ?? "nada ainda"}`);
+    lines.push(`saida esperada       ${saidaEsperada ?? "nenhuma configurada"}`);
+    lines.push(`veredito do porteiro ${JSON.stringify(decidir({
+        tunel: tunel as EstadoTunel, localAddress, saidaEsperada, exigirTunel
+    }))}`);
+    lines.push(`monitor observando   ${pararDeObservar !== null}`);
 
     return lines.join("\n");
 }
@@ -254,12 +374,74 @@ export default definePlugin({
                 match: /(?<=\.STREAM_CREATE,\{.{0,80}?preferred_region:)\i/,
                 replace: "$self.pickStreamRegion($&)"
             }
+        },
+        // O porteiro.
+        //
+        // A funcao ja tem protocolo de recusa proprio -- ela devolve [!1,"no source"] e
+        // [!1,"no permission"] em outros caminhos -- entao a interface do Discord ja sabe lidar
+        // com uma recusa vinda daqui. Nao foi preciso inventar recusa nenhuma.
+        //
+        // O nome `startStreamWithSource` existe so como string, num logger; a funcao em si e
+        // minificada (`async function b(e,n){` no 1.0.9257). Por isso a ancora e a string, e o
+        // corte e estrutural: logo depois dela, a proxima funcao assincrona de dois argumentos.
+        // Conferido contra o bundle real -- ver tests/patch-go-live.test.cjs, que roda o mesmo
+        // regex contra o modulo gravado e exige que ele case exatamente uma vez.
+        {
+            find: "\"startStreamWithSource\"",
+            replacement: {
+                match: /(?<="startStreamWithSource"\);.{0,200}?async function \i\(\i,\i\)\{)/,
+                replace: "const _sf=await $self.antesDeTransmitir();if(!_sf.ok)return[!1,_sf.motivo];"
+            }
         }
     ],
 
     pickStreamRegion(fallback: string | null) {
         const region = settings.store.streamRegion;
         return typeof region === "string" && region !== AUTOMATIC ? region : fallback;
+    },
+
+    /**
+     * Chamado no clique do Go Live, antes de a transmissao subir.
+     *
+     * Devolve { ok: false, motivo } e o Discord mostra o motivo na propria interface. O porteiro
+     * nunca lanca: qualquer erro aqui viraria transmissao travada, e a decisao de projeto e que
+     * uma falha do StreamFix nao pode impedir alguem de transmitir.
+     */
+    async antesDeTransmitir() {
+        try {
+            const { exigirTunel, perfilDoTunel, enderecoDaSaida } = settings.store;
+            if (!exigirTunel) return { ok: true as const };
+
+            const [tunel, localAddress] = await Promise.all([
+                Native.estadoDoTunel(perfilDoTunel) as Promise<EstadoTunel>,
+                enderecoLocalDaMidia()
+            ]);
+
+            const veredito = decidir({
+                tunel, localAddress, exigirTunel: true,
+                saidaEsperada: hostDoEndpoint(enderecoDaSaida)
+            });
+
+            if (!veredito.ok && tunel !== "conectado") {
+                // A spec pedia "um botao para tentar subir". Nao da para por botao na recusa do
+                // Discord, e esperar o tunel aqui deixaria o clique pendurado ate 10 s. Subir em
+                // segundo plano e avisar custa um clique a mais e nenhuma espera.
+                showToast("StreamFix esta subindo o tunel. Clique em Go Live de novo em alguns segundos.", Toasts.Type.MESSAGE);
+                void this.subirOTunel();
+            }
+            return veredito;
+        } catch (error) {
+            // Nao bloqueia por falha propria. A transmissao pode morrer, e ai o monitor avisa --
+            // bem melhor do que ninguem conseguir transmitir porque o plugin quebrou.
+            showToast(`StreamFix nao conseguiu conferir o tunel: ${error instanceof Error ? error.message : String(error)}`, Toasts.Type.FAILURE);
+            return { ok: true as const };
+        }
+    },
+
+    async subirOTunel() {
+        const resultado = await Native.subirTunel(settings.store.perfilDoTunel);
+        if (!resultado.ok) showToast(`StreamFix: ${resultado.motivo}`, Toasts.Type.FAILURE);
+        return resultado;
     },
 
     commands: [
@@ -274,11 +456,30 @@ export default definePlugin({
         }
     ],
 
+    flux: {
+        // O monitor so roda enquanto ha transmissao nossa no ar. Observar sempre custaria uma
+        // leitura do motor de midia a cada meio segundo por nada.
+        STREAM_CREATE({ streamKey }: { streamKey?: string; }) {
+            const eu = UserStore.getCurrentUser()?.id;
+            if (eu != null && typeof streamKey === "string" && streamKey.includes(eu)) comecarAObservar();
+        },
+        STREAM_DELETE({ streamKey }: { streamKey?: string; }) {
+            const eu = UserStore.getCurrentUser()?.id;
+            if (eu != null && typeof streamKey === "string" && streamKey.includes(eu)) pararDeObservarAgora();
+        }
+    },
+
     start() {
         forceRegion();
+        // D9: em quem transmite o tunel e permanente enquanto o plugin estiver ligado. Nao
+        // porque a autorizacao precise -- ela sobrevive a queda -- mas porque alternar o tunel e
+        // o que derruba conexao do Discord.
+        if (settings.store.exigirTunel) void this.subirOTunel();
     },
 
     stop() {
         restoreRegion();
+        pararDeObservarAgora();
+        void Native.derrubarTunel();
     }
 });

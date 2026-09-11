@@ -17,7 +17,7 @@ Diagnóstico de origem em `docs/research/regressao-encoder-inativo-2026-09-03.md
 | 2 — perfil | **feita** em 11/09 |
 | 3 — controle | **feita** em 11/09 |
 | 4 — provisionamento | **feita** em 11/09 |
-| 5 — porteiro | não iniciada (gancho investigado) |
+| 5 — porteiro | **feita** em 11/09 |
 | 6 — assistir | não iniciada (gancho investigado) |
 | 7 — instalador | não iniciada |
 | 8 — entrega | não iniciada |
@@ -365,6 +365,50 @@ logger quanto em `{location:...}`. É estável o bastante; o teste de regressão
 **E o aviso do monitor** entra junto: veredito `quebrado` com causa `entrega` diz "a transmissão
 precisa ser recriada"; causa `captura` diz "o problema é local, recriar não adianta". Só avisa
 — D4.
+
+### O que a fase mediu
+
+`streamFix/tunnel/porteiro.ts` (decisão pura, 15 testes), `streamFix/native.ts` (a ponte, fina) e
+a ligação em `index.tsx`. O porteiro de produção foi rodado com dados reais — estado do WireSock
+pelo CLI de verdade, `localAddress` pelo Discord vivo — e decidiu certo nos dois sentidos.
+
+**Correção ao que este plano dizia sobre a âncora.** O nome `startStreamWithSource` **não existe
+como função** no bundle: ele aparece só como string, num logger. A função é minificada —
+`async function b(e,n){` no 1.0.9257. Um patch ancorado em `startStreamWithSource\(` nunca
+casaria, e o sintoma seria um plugin que carrega, não reclama de nada, e simplesmente nunca
+bloqueia. A âncora certa é a string, e o corte é estrutural: a próxima função assíncrona de dois
+argumentos depois dela.
+
+**O patch virou teste.** `tests/patch-go-live.test.cjs` roda o mesmo regex contra o módulo real
+gravado em `tests/fixtures/` e exige que ele case **exatamente uma vez**, no começo do corpo da
+função, e que o módulo continue sintaticamente válido depois. Um teste final confere que o regex
+testado é o mesmo que o plugin declara — sem isso, o arquivo poderia passar testando um regex que
+ninguém usa. Quando o Discord atualizar, isso falha antes de alguém descobrir transmitindo.
+
+**Correção ao que a spec dizia sobre o `localAddress`.** Ele é o endereço **público** da saída
+(`159.112.151.37`), não o interno do túnel (`10.8.0.2`). Confirmado ao vivo. Uma implementação
+que procurasse a faixa interna recusaria toda transmissão boa.
+
+**Resolvida a pendência da fase 3.** Quem decide é o Discord, não o WireSock — e nos **dois**
+sentidos: o CLI dizer "conectado" com a mídia saindo pelo Brasil bloqueia, e o CLI dizer "fora"
+com a mídia já saindo pela saída libera. O CLI só decide quando o Discord ainda não tem o que
+dizer, que são os segundos iniciais da conexão de voz.
+
+**Três decisões que a spec não tinha:**
+
+1. **Falha do porteiro não bloqueia.** Qualquer erro na verificação libera a transmissão e avisa.
+   A transmissão pode morrer — e aí o monitor avisa — mas isso é melhor do que ninguém conseguir
+   transmitir porque o plugin quebrou.
+2. **"Um botão para tentar subir" virou subir em segundo plano.** Não dá para pôr botão na recusa
+   do Discord, e esperar o túnel no clique o deixaria pendurado até 10 s. Bloqueia, sobe o túnel
+   por trás e diz para clicar de novo: um clique a mais e nenhuma espera.
+3. **O monitor só observa enquanto há transmissão nossa no ar**, por `STREAM_CREATE` /
+   `STREAM_DELETE` filtrados pelo próprio id. Observar sempre custaria uma leitura do motor de
+   mídia a cada meio segundo por nada. E avisa uma vez por mudança de veredito, não por amostra.
+
+**O que falta, e é teste manual:** o patch ainda não foi aplicado pelo Vencord de verdade. Isso
+exige compilar dentro do checkout do mod, que nesta máquina é o que o Discord do usuário carrega
+— trocar o plugin instalado é decisão dele, não minha. É a mesma pendência aberta desde a fase 0.
 
 ---
 
