@@ -58,7 +58,10 @@ RestrictNamespaces=true
 RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
-MemoryDenyWriteExecute=true
+# MemoryDenyWriteExecute NAO entra aqui: o V8 precisa de paginas que passam de gravaveis a
+# executaveis para compilar, e com ela o Node morre com SIGTRAP no primeiro tick de
+# compilacao -- e o systemd reinicia em laco. Medido em 11/09 ao subir a unit pela primeira
+# vez. Nao e um endurecimento que se possa aplicar a um runtime com JIT.
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK

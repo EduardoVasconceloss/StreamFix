@@ -11,6 +11,7 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 
 const {
+    adotarPeer,
     criarConvite,
     registrar,
     remover,
@@ -143,4 +144,54 @@ test("o resumo nao deixa mexer no estado por tabela", () => {
     const r = resumo(estado);
     r.peers.push({ publica: "invasor", endereco: "10.8.0.99", convite: "x", criadoEm: AGORA });
     assert.equal(estado.peers.length, 0);
+});
+
+// ------------------------------------------------------------------------- adotar quem ja estava
+
+test("adotar um peer que ja existia no wg0 nao gasta convite", () => {
+    // Quem monta a saida a mao primeiro e so depois automatiza -- que e o caminho normal --
+    // chega aqui com gente ja conectada. Sem adotar, o provisionador entregaria o endereco
+    // dessa gente para outra pessoa e derrubaria quem estava la.
+    const r = adotarPeer(estadoNovo(), CHAVE_A, "10.8.0.2", AGORA);
+
+    assert.equal(r.ok, true);
+    assert.equal(r.estado.peers.length, 1);
+    assert.equal(r.estado.peers[0].endereco, "10.8.0.2");
+    assert.equal(r.estado.convites.length, 0, "nao inventa convite");
+});
+
+test("o endereco adotado sai da lista de livres", () => {
+    const r = adotarPeer(estadoNovo(), CHAVE_A, "10.8.0.2", AGORA);
+    const depois = registrar(
+        criarConvite(r.estado, "CONVITE-DE-TESTE-0001", 1).estado,
+        { convite: "CONVITE-DE-TESTE-0001", chavePublica: CHAVE_B },
+        AGORA
+    );
+    assert.equal(depois.ok, true);
+    assert.notEqual(depois.peerNovo.endereco, "10.8.0.2", "entregou o endereco de quem ja estava");
+    assert.equal(depois.peerNovo.endereco, "10.8.0.3");
+});
+
+test("aceita com mascara, porque e como o wg mostra", () => {
+    const r = adotarPeer(estadoNovo(), CHAVE_A, "10.8.0.2/32", AGORA);
+    assert.equal(r.ok, true);
+    assert.equal(r.estado.peers[0].endereco, "10.8.0.2", "a mascara nao entra no estado");
+});
+
+test("recusa o endereco do proprio servidor", () => {
+    const r = adotarPeer(estadoNovo(), CHAVE_A, "10.8.0.1", AGORA);
+    assert.equal(r.ok, false);
+    assert.match(r.motivo, /proprio servidor/);
+});
+
+test("recusa endereco ja ocupado, e chave ja conhecida", () => {
+    const comA = adotarPeer(estadoNovo(), CHAVE_A, "10.8.0.2", AGORA).estado;
+    assert.match(adotarPeer(comA, CHAVE_B, "10.8.0.2", AGORA).motivo, /ja esta com outra/);
+    assert.match(adotarPeer(comA, CHAVE_A, "10.8.0.9", AGORA).motivo, /ja esta no estado/);
+});
+
+test("recusa endereco fora da faixa e chave fora do formato", () => {
+    assert.match(adotarPeer(estadoNovo(), CHAVE_A, "192.168.1.5", AGORA).motivo, /fora da faixa/);
+    assert.match(adotarPeer(estadoNovo(), CHAVE_A, "nao-e-ip", AGORA).motivo, /invalido/);
+    assert.match(adotarPeer(estadoNovo(), "chave-torta", "10.8.0.2", AGORA).motivo, /formato WireGuard/);
 });

@@ -1,9 +1,12 @@
 /*
  * Testes do porteiro.
  *
- * O teste que carrega a fase e "a leitura do Discord ganha do CLI, nos dois sentidos". Ele
- * guarda a licao que custou mais caro neste projeto: componente que diz "conectado" nao prova
- * nada sobre por onde a midia sai.
+ * O teste que carrega a fase e "endereco errado bloqueia, mesmo com o CLI jurando que esta de
+ * pe". Ele guarda a licao que custou mais caro neste projeto: componente que diz "conectado"
+ * nao prova nada sobre por onde a midia sai.
+ *
+ * O irmao dele -- "os dois precisam concordar para liberar" -- guarda a licao oposta, que custou
+ * uma medicao em 11/09: o `localAddress` concordar tambem nao prova nada, porque ele envelhece.
  */
 
 const assert = require("node:assert/strict");
@@ -42,15 +45,30 @@ test("libera quando o Discord confirma que a midia sai pela saida", () => {
     assert.deepEqual(decidir(situacao()), { ok: true, nota: null });
 });
 
-test("a leitura do Discord ganha do CLI, nos dois sentidos", () => {
+test("endereco errado bloqueia, mesmo com o CLI jurando que esta de pe", () => {
     // A licao que custou mais caro: componente que diz "conectado" nao prova nada sobre por onde
-    // a midia sai. Foi o `localAddress` que provou Santiago em 12d, e e ele que decide aqui.
+    // a midia sai. Foi o `localAddress` que provou Santiago em 12d.
     const cliMentindo = decidir(situacao({ tunel: "conectado", localAddress: BRASIL }));
     assert.equal(cliMentindo.ok, false, "o CLI disse conectado e a midia sai pelo Brasil");
     assert.match(cliMentindo.motivo, new RegExp(BRASIL.replace(/\./g, "\\.")));
+});
 
-    const cliPessimista = decidir(situacao({ tunel: "fora", localAddress: SAIDA }));
-    assert.equal(cliPessimista.ok, true, "a midia ja sai pela saida; o CLI estar errado nao muda isso");
+test("os dois precisam concordar para liberar: o localAddress envelhece", () => {
+    // Medido em 11/09, derrubando o tunel com uma call no ar: o ping do Discord caiu de 131 ms
+    // para 33 ms -- a midia passou a sair direto, pelo Brasil -- e o `localAddress` continuou
+    // reportando o endereco da saida pelos 6 segundos inteiros da medicao.
+    //
+    // Uma versao que confiasse so nele liberaria exatamente o caso que este porteiro existe para
+    // pegar: entrar na call com o tunel de pe, o tunel cair, e clicar em Go Live em seguida.
+    const tunelCaiu = decidir(situacao({ tunel: "fora", localAddress: SAIDA }));
+    assert.equal(tunelCaiu.ok, false, "leitura velha nao pode liberar com o tunel fora");
+    assert.match(tunelCaiu.motivo, /nao esta de pe/);
+
+    const semSaberDoTunel = decidir(situacao({ tunel: "desconhecido", localAddress: SAIDA }));
+    assert.equal(semSaberDoTunel.ok, false, "sem confirmacao do CLI, a leitura velha nao basta");
+
+    const osDoisConcordam = decidir(situacao({ tunel: "conectado", localAddress: SAIDA }));
+    assert.deepEqual(osDoisConcordam, { ok: true, nota: null });
 });
 
 test("o endereco procurado e o PUBLICO da saida, nao o interno do tunel", () => {

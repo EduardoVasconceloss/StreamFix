@@ -14,6 +14,7 @@
  *   node convites.mjs listar
  *   node convites.mjs revogar <codigo>
  *   node convites.mjs remover <chave-publica>
+ *   node convites.mjs adotar <chave-publica> <endereco>
  *
  * O estado tem chave publica de todo mundo e os codigos de convite. Nao tem chave privada de
  * ninguem -- as privadas nunca saem das maquinas de quem instalou.
@@ -24,7 +25,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import { argv, exit } from "node:process";
 
-import { criarConvite, remover, resumo, revogarConvite } from "./registro.ts";
+import { adotarPeer, criarConvite, remover, resumo, revogarConvite } from "./registro.ts";
 
 const PADRAO = "/var/lib/streamfix/estado.json";
 
@@ -188,17 +189,32 @@ function cmdRemover() {
     lembrete();
 }
 
+function cmdAdotar() {
+    const chave = argv[3];
+    const endereco = argv[4];
+    if (!chave || !endereco || chave.startsWith("--")) morre("uso: adotar <chave-publica> <endereco>");
+
+    const r = adotarPeer(ler(), chave, endereco, new Date().toISOString());
+    if (!r.ok) morre(r.motivo);
+
+    gravar(r.estado);
+    console.log(`adotado: ${endereco} para uma chave que ja estava no wg0.`);
+    console.log("  Ele nao gastou convite -- ja estava aqui antes do provisionador.");
+    lembrete();
+}
+
 const COMANDOS = {
     iniciar: cmdIniciar,
     novo: cmdNovo,
     listar: cmdListar,
     revogar: cmdRevogar,
-    remover: cmdRemover
+    remover: cmdRemover,
+    adotar: cmdAdotar
 };
 
 const comando = COMANDOS[argv[2]];
 if (!comando) {
-    console.error("uso: node convites.mjs <iniciar|novo|listar|revogar|remover> [opcoes]");
+    console.error("uso: node convites.mjs <iniciar|novo|listar|revogar|remover|adotar> [opcoes]");
     console.error("     --estado <caminho>   (padrao: " + PADRAO + ")");
     exit(1);
 }

@@ -297,3 +297,43 @@ export function resumo(estado: Estado): Resumo {
         peers: [...estado.peers]
     };
 }
+
+/**
+ * Adota um peer que ja existia no WireGuard antes de o provisionador existir.
+ *
+ * Sem isto, iniciar o estado sobre um `wg0` que ja tem gente faria o provisionador entregar um
+ * endereco ja em uso -- e derrubar quem estava la. Acontece com quem monta a saida a mao
+ * primeiro e so depois automatiza, que e o caminho normal.
+ */
+export function adotarPeer(
+    estado: Estado,
+    publica: string,
+    endereco: string,
+    agora: string
+): { ok: true; estado: Estado } | { ok: false; motivo: string } {
+    if (typeof publica !== "string" || !FORMATO_CHAVE.test(publica)) {
+        return { ok: false, motivo: "chave publica fora do formato WireGuard" };
+    }
+    if (estado.peers.some(p => p.publica === publica)) {
+        return { ok: false, motivo: "essa chave ja esta no estado" };
+    }
+
+    const semMascara = (endereco ?? "").split("/")[0];
+    const numero = paraNumero(semMascara);
+    if (numero === null) return { ok: false, motivo: `endereco invalido: ${endereco}` };
+
+    if (!enderecosDaFaixa(estado.faixa).includes(numero)) {
+        return { ok: false, motivo: `${semMascara} esta fora da faixa ${estado.faixa}` };
+    }
+    if (semMascara === estado.enderecoServidor) {
+        return { ok: false, motivo: "esse e o endereco do proprio servidor" };
+    }
+    if (estado.peers.some(p => p.endereco === semMascara)) {
+        return { ok: false, motivo: `${semMascara} ja esta com outra pessoa` };
+    }
+
+    // `convite: "adotado"` fica na auditoria dizendo a verdade: essa pessoa nao entrou por
+    // convite nenhum, ela ja estava aqui.
+    const peer: Peer = { publica, endereco: semMascara, convite: "adotado", criadoEm: agora };
+    return { ok: true, estado: { ...estado, peers: [...estado.peers, peer] } };
+}

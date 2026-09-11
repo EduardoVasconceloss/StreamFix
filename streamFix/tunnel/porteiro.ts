@@ -42,12 +42,20 @@ export function hostDoEndpoint(endpoint: string | null | undefined): string | nu
 /**
  * Decide.
  *
- * A ordem das perguntas e o desenho todo: **a leitura do Discord vem primeiro**. Se ela diz que
- * a midia sai pela saida, esta liberado mesmo que o CLI discorde; se ela diz que sai por outro
- * lugar, esta bloqueado mesmo que o CLI jure que o tunel esta de pe.
+ * **A leitura do Discord vale como negativa, nao como positiva.** Se ela diz que a midia sai
+ * por outro lugar, esta bloqueado mesmo que o CLI jure que o tunel esta de pe -- uma observacao
+ * de endereco errado e confiavel. Mas ela concordar com a saida NAO basta, porque o
+ * `localAddress` envelhece.
  *
- * O CLI so decide quando o Discord nao tem o que dizer -- o que acontece nos segundos em que a
- * conexao de voz ainda esta subindo.
+ * Medido em 11/09, derrubando o tunel com uma call no ar: o ping do Discord caiu de 131 ms para
+ * 33 ms -- a midia passou a sair direto, pelo Brasil -- e o `localAddress` continuou reportando
+ * o endereco da saida pelos 6 segundos inteiros da medicao. Ele e escolhido quando a conexao
+ * nasce e nao e refeito quando o caminho muda por baixo.
+ *
+ * Uma versao que confiasse so nele liberaria exatamente o caso que este porteiro existe para
+ * pegar: entrar na call com o tunel de pe, o tunel cair, e clicar em Go Live em seguida.
+ *
+ * Por isso os dois precisam concordar para liberar, e qualquer discordancia bloqueia.
  */
 export function decidir(s: Situacao): Veredito {
     if (!s.exigirTunel) {
@@ -59,13 +67,18 @@ export function decidir(s: Situacao): Veredito {
         ? s.localAddress
         : null;
 
-    if (saida !== null && local !== null) {
-        if (local === saida) return { ok: true, nota: null };
+    if (saida !== null && local !== null && local !== saida) {
+        // A negativa confiavel: o Discord viu a midia saindo de outro lugar.
         return {
             ok: false,
             motivo: `A midia esta saindo por ${local}, e nao pela saida ${saida}.`
                 + " O Discord vai negar a entrega. Suba o tunel e tente de novo."
         };
+    }
+
+    if (saida !== null && local === saida && s.tunel === "conectado") {
+        // Os dois concordam. E a unica combinacao que libera com certeza.
+        return { ok: true, nota: null };
     }
 
     // Daqui para baixo o Discord nao tem o que dizer, e o CLI e o que sobra.
@@ -82,6 +95,8 @@ export function decidir(s: Situacao): Veredito {
         case "fora":
             return {
                 ok: false,
+                // Vale mesmo quando o `localAddress` diz o endereco da saida: ele envelhece, e
+                // com o tunel fora a leitura antiga e justamente a que engana.
                 motivo: "O tunel do StreamFix nao esta de pe."
                     + " Sem ele o Discord nega a transmissao para quem esta no Brasil."
             };

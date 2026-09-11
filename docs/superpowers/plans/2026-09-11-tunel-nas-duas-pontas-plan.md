@@ -628,6 +628,28 @@ abre dizendo o que quebrou em 03/09, e diz na cara o preço que a spec escolheu 
 precisa de uma saída**, e **quem assiste também precisa de túnel**, que é a parte que
 surpreende.
 
+**A medição do soluço achou um defeito no porteiro da fase 5, e ele era sério.**
+
+Derrubando o túnel com a call no ar, amostrando o Discord a cada 250 ms: o ping caiu de **131
+ms para 33 ms** — a mídia passou a sair direto, pelo Brasil — e o `localAddress` **continuou
+reportando o endereço da saída** pelos 6 segundos inteiros. Ele é escolhido quando a conexão
+nasce e não é refeito quando o caminho muda por baixo.
+
+A fase 5 tinha concluído que "o Discord manda nos dois sentidos", inclusive que o CLI dizer
+"fora" com o `localAddress` na saída **libera**. Isso estava errado, e a conclusão veio de um
+contrafactual, não de uma queda de túnel de verdade. O caso que o porteiro liberaria é
+exatamente o que ele existe para pegar: entrar na call com o túnel de pé, o túnel cair, clicar
+em Go Live em seguida.
+
+**A regra certa é assimétrica:** a leitura do Discord vale como **negativa** — ver um endereço
+errado é observação confiável — e não vale como **positiva**, porque pode estar velha. Os dois
+precisam concordar para liberar. Corrigido em `decidir`, e o teste que codificava a crença
+errada foi reescrito para a medição.
+
+**O que a call sobreviveu.** A conexão de mídia nunca saiu de `CONNECTED`: o caminho mudou por
+baixo, sem renegociação. Os contadores de pacote pararam por ~0,75 s na queda e por até ~3 s na
+subida — limite superior, porque eles também param quando ninguém fala.
+
 **O que ficou por fazer, e por quê:**
 
 - **A saída não foi exposta.** A unit e o passo a passo estão escritos, mas abrir a porta 8787
