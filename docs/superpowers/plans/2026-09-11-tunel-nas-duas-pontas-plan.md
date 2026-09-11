@@ -14,7 +14,7 @@ Diagnóstico de origem em `docs/research/regressao-encoder-inativo-2026-09-03.md
 |---|---|
 | 0 — remover a proxy | **feita** em 11/09 |
 | 1 — coletor | **feita** em 11/09 |
-| 2 — perfil | não iniciada |
+| 2 — perfil | **feita** em 11/09 |
 | 3 — controle | não iniciada |
 | 4 — provisionamento | não iniciada |
 | 5 — porteiro | não iniciada (gancho investigado) |
@@ -174,7 +174,36 @@ produção lê vira teste vermelho em vez de bug.
 
 **Como se prova de verdade:** um perfil gerado por esta unidade, importado no WireSock, tem que
 resultar em `AllowedApps=Discord` no log do serviço. É teste manual, uma vez, e vale mais que
-qualquer asserção sobre texto.
+qualquer asserção sobre texto. **Ainda não feito** — depende da fase 3 para importar.
+
+### O que a fase mediu
+
+Feita em `streamFix/tunnel/perfil.ts`, 21 testes em `tests/perfil.test.cjs`. A busca binária foi
+rodada de verdade, pelas funções de produção, e devolveu **1492 / 1412** — os mesmos números que
+haviam sido encontrados na mão em 11/09. A unidade reproduz a medição manual.
+
+**Descoberta que muda a fase 4: a VPS não responde echo.** A primeira medição, contra
+`159.112.151.37`, devolveu `null`. O host aceita ICMP (`-A INPUT -p icmp -j ACCEPT`, e
+`icmp_echo_ignore_all = 0`); quem descarta é a **security list da OCI**, que por padrão libera só
+`fragmentation needed` (tipo 3 código 4) e não o echo (tipo 8).
+
+Consequências:
+
+- O código ganhou `medirMtuComAlternativas`, que tenta a saída própria primeiro e cai para
+  `8.8.8.8` / `1.1.1.1`. Medir contra outro host não falseia nada: o gargalo é o link de casa,
+  presente em todo caminho que sai da máquina. E uma saída de terceiro (D9) pode ser igual ou
+  pior, então a alternativa é necessária de qualquer jeito.
+- **Item para a fase 4:** liberar ICMP tipo 8 na security list da saída própria, para que a
+  medição use o caminho real. Opcional, não bloqueante.
+
+**Duas decisões tomadas na implementação, que a spec não tinha:**
+
+1. **`null` não vira chute.** Nenhuma resposta significa "não sei" — ICMP bloqueado, saída fora
+   do ar, rede caída chegam todos aqui iguais. Devolver um número seria repetir o erro do 1420
+   fixo com mais confiança.
+2. **A leitura do `ping` procura o sucesso, nunca a falha.** `TTL=` aparece em toda resposta que
+   chegou, em qualquer idioma. Casar com `"Packet needs to be fragmented"` daria "cabe" em toda
+   máquina em português — e esta é uma.
 
 ---
 
