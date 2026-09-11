@@ -15,6 +15,7 @@ import { Constants, MaskedLink, RestAPI, SearchableSelect, showToast, Toasts, Us
 
 import { aAmostra } from "./tunnel/coletor";
 import { EstadoTunel } from "./tunnel/controle";
+import { decidirEntrada, deveDerrubarDepois, PRAZO_ATE_DERRUBAR_MS } from "./tunnel/entrada";
 import { Estado, Veredito } from "./tunnel/monitor";
 import { observar } from "./tunnel/observador";
 import { aviso, decidir, hostDoEndpoint } from "./tunnel/porteiro";
@@ -54,6 +55,33 @@ const Native = VencordNative.pluginHelpers.StreamFix as PluginNative<typeof impo
 
 /** O laco do monitor, enquanto houver transmissao nossa no ar. */
 let pararDeObservar: (() => void) | null = null;
+
+/**
+ * O estado do tunel como o conhecemos agora.
+ *
+ * O gancho de entrar numa transmissao e **sincrono** -- nao da para perguntar ao WireSock no
+ * meio dele. Entao a entrada le este cache, que e atualizado por quem sobe e derruba o tunel.
+ * Quando ele esta `desconhecido`, a entrada aborta e repete, que e exatamente o desenho.
+ */
+let tunelConhecido: EstadoTunel = "desconhecido";
+
+/** Se ha transmissao nossa no ar. Impede a entrada de derrubar o tunel que a sustenta. */
+let transmitindo = false;
+
+/** Ha um tunel subindo por causa de uma entrada. Cobre os ~800 ms entre abortar e repetir. */
+let preparandoEntrada = false;
+
+/** Esta chamada e a repeticao. Uma so, nunca reentrante: e o que impede o laco. */
+let repetindoEntrada = false;
+
+/** O prazo ate o tunel que subimos para assistir cair. Renovado a cada entrada. */
+let quedaAgendada: ReturnType<typeof setTimeout> | null = null;
+
+function cancelarQueda() {
+    if (quedaAgendada === null) return;
+    clearTimeout(quedaAgendada);
+    quedaAgendada = null;
+}
 
 // O experimento que esconde o Go Live de quem esta no Brasil. O plugin nao o desarma mais --
 // ver docs/superpowers/plans/2026-09-11-tunel-nas-duas-pontas-plan.md, correcao 2. Continua
@@ -156,6 +184,11 @@ const settings = definePluginSettings({
         type: OptionType.STRING,
         description: "WireSock profile name. The installer writes it; change it only if you renamed the profile.",
         default: "streamfix-santiago"
+    },
+    tunelPermanente: {
+        type: OptionType.BOOLEAN,
+        description: "Keep the tunnel up the whole time (D9). Leave it on if you stream; turn it off if you only watch, and the tunnel will come up only while you join a stream.",
+        default: true
     },
     enderecoDaSaida: {
         type: OptionType.STRING,
@@ -345,6 +378,7 @@ async function buildReport() {
     }
     const localAddress = await enderecoLocalDaMidia();
     lines.push(`porteiro ${exigirTunel ? "ligado" : "desligado"} | perfil "${perfilDoTunel}"`);
+    lines.push(`tunel ${settings.store.tunelPermanente ? "permanente" : "so para assistir"}`);
     lines.push(`o WireSock diz       ${tunel}`);
     lines.push(`o Discord diz        ${localAddress ?? "nada ainda"}`);
     lines.push(`saida esperada       ${saidaEsperada ?? "nenhuma configurada"}`);
@@ -352,6 +386,14 @@ async function buildReport() {
         tunel: tunel as EstadoTunel, localAddress, saidaEsperada, exigirTunel
     }))}`);
     lines.push(`monitor observando   ${pararDeObservar !== null}`);
+
+    lines.push("", "== entrada em transmissao alheia ==");
+    // O cache que a entrada sincrona le. Divergir do que o WireSock diz acima e o modo de falha
+    // a procurar aqui: significa que subimos ou derrubamos o tunel por fora do plugin.
+    lines.push(`estado em cache      ${tunelConhecido}`);
+    lines.push(`transmitindo         ${transmitindo}`);
+    lines.push(`tunel subindo        ${preparandoEntrada}`);
+    lines.push(`queda agendada       ${quedaAgendada !== null}`);
 
     return lines.join("\n");
 }
@@ -391,6 +433,27 @@ export default definePlugin({
             replacement: {
                 match: /(?<="startStreamWithSource"\);.{0,200}?async function \i\(\i,\i\)\{)/,
                 replace: "const _sf=await $self.antesDeTransmitir();if(!_sf.ok)return[!1,_sf.motivo];"
+            }
+        },
+        // O porteiro de quem assiste.
+        //
+        // A funcao e **sincrona** -- despacha STREAM_WATCH e retorna. Nao da para esperar o
+        // tunel dentro dela sem torna-la assincrona e mudar a ordem para quem a chama. Entao o
+        // padrao nao e segurar: aborta a entrada, sobe o tunel, e chama a original de novo.
+        //
+        // **Um patch so, e de proposito.** O modulo exporta A9 (entrar) e Nl (entrar e focar),
+        // mas Nl chama A9 por dentro. Patchar as duas dispararia o porteiro duas vezes por
+        // entrada e tornaria a repeticao reentrante.
+        //
+        // O $1 e o nome minificado da propria funcao, e e por ele que a repeticao chama a
+        // original. `arguments` dentro da arrow e o da funcao que a contem -- arrow nao tem o
+        // proprio. Ver tests/patch-assistir.test.cjs, que roda este mesmo regex contra o modulo
+        // real e exige que ele case exatamente uma vez.
+        {
+            find: "Cannot join a null voice channel",
+            replacement: {
+                match: /(?<=function (\i)\(\i,\i\)\{)(?=if\(null!=\i\.default\.getRemoteSessionId\(\)\)return)/,
+                replace: "if(!$self.antesDeAssistir(()=>$1(...arguments)))return;"
             }
         }
     ],
@@ -441,7 +504,85 @@ export default definePlugin({
     async subirOTunel() {
         const resultado = await Native.subirTunel(settings.store.perfilDoTunel);
         if (!resultado.ok) showToast(`StreamFix: ${resultado.motivo}`, Toasts.Type.FAILURE);
+        tunelConhecido = resultado.ok ? "conectado" : "fora";
         return resultado;
+    },
+
+    /**
+     * Chamado no clique de entrar numa transmissao, antes de o STREAM_WATCH sair.
+     *
+     * Sincrono de proposito: o gancho e sincrono. Devolve `false` e a entrada nao acontece --
+     * que e o mesmo caminho que a funcao ja usa quando ha sessao remota.
+     *
+     * @param repetir chama a funcao original de novo, com os mesmos argumentos.
+     */
+    antesDeAssistir(repetir: () => void) {
+        try {
+            const decisao = decidirEntrada({
+                exigirTunel: settings.store.exigirTunel,
+                tunel: tunelConhecido,
+                jaTentou: repetindoEntrada,
+                preparando: preparandoEntrada
+            });
+
+            if (decisao.aviso !== null) {
+                showToast(decisao.aviso, decisao.prepararTunel ? Toasts.Type.MESSAGE : Toasts.Type.FAILURE);
+            }
+
+            if (decisao.entrar) {
+                // Se subimos o tunel para esta entrada, ele e nosso e cai depois do prazo. Se ja
+                // estava de pe, e de quem transmite (D9) e nao se mexe nele.
+                if (deveDerrubarDepois({ subimosParaEntrar: repetindoEntrada, transmitindo })) {
+                    cancelarQueda();
+                    quedaAgendada = setTimeout(() => {
+                        quedaAgendada = null;
+                        // Reconferido na hora: a transmissao pode ter nascido dentro do prazo.
+                        if (transmitindo || settings.store.tunelPermanente) return;
+                        tunelConhecido = "fora";
+                        void Native.derrubarTunel();
+                    }, PRAZO_ATE_DERRUBAR_MS);
+                }
+                // `repetindoEntrada` nao se zera aqui: quem o zera e o `finally` de
+                // prepararERepetir, que e o dono do ciclo inteiro.
+                return true;
+            }
+
+            if (decisao.prepararTunel) void this.prepararERepetir(repetir);
+
+            return false;
+        } catch (error) {
+            // Falha nossa nao pode impedir alguem de assistir. Se o tunel nao estiver de pe, a
+            // tela fica preta -- mas isso e melhor do que o plugin quebrado travar a entrada.
+            preparandoEntrada = false;
+            repetindoEntrada = false;
+            showToast(`StreamFix nao conseguiu conferir o tunel: ${error instanceof Error ? error.message : String(error)}`, Toasts.Type.FAILURE);
+            return true;
+        }
+    },
+
+    /**
+     * Sobe o tunel e repete a entrada. Uma vez so.
+     *
+     * `preparandoEntrada` vale durante a subida, para que um clique impaciente ouca "ainda
+     * subindo" em vez de "desisti". `repetindoEntrada` vale so durante a repeticao, e e ele que
+     * impede a repeticao de pedir outra repeticao.
+     *
+     * O `finally` repete mesmo se a subida falhar: a decisao de entrar ou nao e do porteiro,
+     * que vai ver o tunel ainda fora e desistir com o aviso certo.
+     */
+    async prepararERepetir(repetir: () => void) {
+        preparandoEntrada = true;
+        try {
+            await this.subirOTunel();
+        } finally {
+            repetindoEntrada = true;
+            try {
+                repetir();
+            } finally {
+                repetindoEntrada = false;
+                preparandoEntrada = false;
+            }
+        }
     },
 
     commands: [
@@ -461,11 +602,18 @@ export default definePlugin({
         // leitura do motor de midia a cada meio segundo por nada.
         STREAM_CREATE({ streamKey }: { streamKey?: string; }) {
             const eu = UserStore.getCurrentUser()?.id;
-            if (eu != null && typeof streamKey === "string" && streamKey.includes(eu)) comecarAObservar();
+            if (eu == null || typeof streamKey !== "string" || !streamKey.includes(eu)) return;
+            // A transmissao nasceu: o tunel passa a sustenta-la, e a queda agendada por uma
+            // entrada anterior nao pode mais acontecer.
+            transmitindo = true;
+            cancelarQueda();
+            comecarAObservar();
         },
         STREAM_DELETE({ streamKey }: { streamKey?: string; }) {
             const eu = UserStore.getCurrentUser()?.id;
-            if (eu != null && typeof streamKey === "string" && streamKey.includes(eu)) pararDeObservarAgora();
+            if (eu == null || typeof streamKey !== "string" || !streamKey.includes(eu)) return;
+            transmitindo = false;
+            pararDeObservarAgora();
         }
     },
 
@@ -474,12 +622,27 @@ export default definePlugin({
         // D9: em quem transmite o tunel e permanente enquanto o plugin estiver ligado. Nao
         // porque a autorizacao precise -- ela sobrevive a queda -- mas porque alternar o tunel e
         // o que derruba conexao do Discord.
-        if (settings.store.exigirTunel) void this.subirOTunel();
+        if (settings.store.exigirTunel && settings.store.tunelPermanente) void this.subirOTunel();
+        else void this.lerEstadoDoTunel();
+    },
+
+    /** Enche o cache que a entrada sincrona le. */
+    async lerEstadoDoTunel() {
+        try {
+            tunelConhecido = await Native.estadoDoTunel(settings.store.perfilDoTunel) as EstadoTunel;
+        } catch {
+            tunelConhecido = "desconhecido";
+        }
     },
 
     stop() {
         restoreRegion();
+        cancelarQueda();
         pararDeObservarAgora();
+        transmitindo = false;
+        repetindoEntrada = false;
+        preparandoEntrada = false;
+        tunelConhecido = "fora";
         void Native.derrubarTunel();
     }
 });

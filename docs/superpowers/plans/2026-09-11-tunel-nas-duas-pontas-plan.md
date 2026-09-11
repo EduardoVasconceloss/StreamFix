@@ -18,7 +18,7 @@ Diagnóstico de origem em `docs/research/regressao-encoder-inativo-2026-09-03.md
 | 3 — controle | **feita** em 11/09 |
 | 4 — provisionamento | **feita** em 11/09 |
 | 5 — porteiro | **feita** em 11/09 |
-| 6 — assistir | não iniciada (gancho investigado) |
+| 6 — assistir | **feita** em 11/09 |
 | 7 — instalador | não iniciada |
 | 8 — entrega | não iniciada |
 
@@ -439,6 +439,59 @@ dele. O risco a vigiar é o laço — a repetição tem que ser de uma tentativa
 **Dois pontos não medidos, e vale medir antes de escrever:**
 - Subir o túnel no meio de uma call causa soluço na voz?
 - Entrar na transmissão dentro dos 10 s é folga suficiente em conexão lenta?
+
+### O que a fase mediu
+
+`streamFix/tunnel/entrada.ts` (decisão pura, 17 testes), o patch em `index.tsx`, e
+`tests/patch-assistir.test.cjs` rodando o regex contra o módulo real gravado em
+`tests/fixtures/modulo-assistir-1.0.9257.js`.
+
+**A âncora deste plano estava certa, e foi conferida.** A string `Cannot join a null voice
+channel` existe em **um** módulo entre os 14.773 do bundle, uma vez nele: o 401843, 3.099 bytes.
+Diferente da fase 5, aqui não houve correção a fazer.
+
+**Mas o alvo do patch não é a string.** Ela vive em `D`, uma função interna de validação que
+`A9` e `Nl` chamam. Ela serve de `find` — é o que identifica o módulo — e o `match` é outro: o
+começo do corpo de `A9`, ancorado no `getRemoteSessionId()` que é a primeira instrução dela.
+
+**Um patch só, e isso é uma correção ao que esta fase dizia.** O plano lista os dois exportados
+como se fossem dois ganchos. `Nl` chama `A9` por dentro (`function M(e,t){...;v(e,t);...}`, e o
+teste prova a delegação). Patchar as duas dispararia o porteiro **duas vezes** por entrada pelo
+caminho do `Nl`, e a segunda chamada chegaria já com a repetição em curso — que é exatamente o
+laço reentrante que esta fase manda vigiar.
+
+**A repetição chama a função original por ela mesma.** O `match` captura o nome minificado num
+grupo, e o `replace` monta `()=>$1(...arguments)`. `arguments` dentro de uma arrow é o da função
+que a contém — arrow não tem o próprio —, então a repetição reconstrói a chamada exata.
+
+**Uma decisão que a spec não tinha: `preparando` é separado de `jaTentou`.** São ~800 ms entre
+abortar e repetir, e clicar de novo nesse intervalo é normal. Com um flag só, o segundo clique
+ouviria "não consegui subir o túnel" **com o túnel subindo** — mentira, e do tipo que faz a
+pessoa desistir. Agora ele ouve "ainda estou subindo".
+
+**Uma correção ao "derrubar 10 s depois", que é incondicional neste plano.** Por D9 o túnel de
+quem transmite é permanente, e a fase 5 o sobe no `start()`. Derrubar sem olhar mataria o túnel
+alheio — e, se a transmissão tivesse nascido dentro do prazo, mataria a própria entrega que o
+porteiro acabou de garantir. `deveDerrubarDepois` exige as duas coisas: que tenhamos subido o
+túnel **para esta entrada**, e que não estejamos transmitindo. O prazo é reconferido quando
+dispara, porque a transmissão pode nascer dentro dele.
+
+**E isso expôs um buraco da fase 5:** com o túnel permanente, o fluxo de 4.3 nunca aconteceria,
+e quem só assiste pagaria ~80 ms na call inteira à toa. Daí a configuração `tunelPermanente`
+(ligada por padrão, que é o comportamento de antes): desligada, o túnel sobe só na entrada e cai
+depois. Sem ela o código desta fase seria letra morta.
+
+**Prova de comportamento, não só de regex.** A `A9` real, recortada do módulo e patchada, roda
+com as dependências dubladas e a lógica pura de produção. Seis cenários: túnel de pé entra
+direto; túnel fora sobe-repete-entra-agenda; túnel que não sobe tenta **uma vez** e desiste sem
+laço; clique impaciente ouve a verdade e não sobe um segundo túnel; três cliques dão um túnel só
+e uma entrada só; e clicar de novo com tudo de pé entra sem subir nada.
+
+**Os dois pontos não medidos continuam não medidos, e de propósito.** Medir o soluço na voz
+exigiria derrubar e subir o túnel no meio da call do usuário, que é ação visível na máquina
+dele. A folga dos 10 s exige conexão lenta e uma transmissão de verdade para entrar. Nenhum dos
+dois é pré-requisito para o código estar certo: o primeiro muda quando subimos o túnel, o
+segundo muda um número. Ficam para a fase 8, com os amigos.
 
 ---
 
