@@ -1,5 +1,7 @@
 # Plano de implementação: túnel momentâneo
 
+> **Substituido em 11/09/2026** por `2026-09-11-tunel-nas-duas-pontas-plan.md`.
+
 Implementa `docs/superpowers/specs/2026-09-08-tunel-momentaneo-design.md`. A spec responde
 *o quê* e *por quê*; este plano responde *em que ordem* e *como se prova cada passo*.
 
