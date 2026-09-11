@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.1.0](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.0.1...v2.1.0) (2026-09-11)
+
+
+### Features
+
+* diagnostico do tunel, para quando "conectado" nao basta ([8d41ae7](https://github.com/EduardoVasconceloss/StreamFix/commit/8d41ae7822825d281728d250b295a16125f08236))
+
+
+### Bug Fixes
+
+* a janela exigia convite de quem ja tem o tunel ([042d77e](https://github.com/EduardoVasconceloss/StreamFix/commit/042d77e49102542b0e41e53355cab8b6f2a6325a))
+* o tunel precisa estar de pe ANTES de o Discord abrir ([fbcf56f](https://github.com/EduardoVasconceloss/StreamFix/commit/fbcf56f3d252020ed4f91a8451bf94ce0f1c4fcd))
+* o tunel so aceitava o Discord estavel ([ed76028](https://github.com/EduardoVasconceloss/StreamFix/commit/ed76028a83fe68b37673fab9f5f840c6f8283667))
+* tunel ja de pe nao e falha de conexao ([06f214e](https://github.com/EduardoVasconceloss/StreamFix/commit/06f214ed6e02c32f4d6b3493c7b25136348b86d3))
+
 ## [2.0.1](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.0.0...v2.0.1) (2026-09-11)
 
 
