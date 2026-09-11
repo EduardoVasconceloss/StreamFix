@@ -2,7 +2,7 @@
     StreamFix - instalador com janela (GUI)
 
     Faz exatamente o que o StreamFix-Installer.ps1/.bat de terminal faz -- mesmo motor,
-    mesmas funcoes, mesmo Tor/pnpm/git por baixo -- so trocando as perguntas de terminal por
+    mesmas funcoes, mesmo WireSock/pnpm/git por baixo -- so trocando as perguntas de terminal por
     uma tela com opcoes e um botao "Instalar", e o texto que rolava no console por uma caixa
     de log dentro da janela. Quem prefere ver tudo em texto puro continua usando o .bat ou o
     .ps1 direto; esta janela e so uma segunda forma de chegar no mesmo lugar.
@@ -152,73 +152,23 @@ if ($detectedRoot) {
 }
 
 # --- saida de rede ---
-$proxyBox = New-Object System.Windows.Forms.GroupBox
-$proxyBox.Text = 'Como o bypass vai sair para fora do Brasil'
-$proxyBox.Location = New-Object System.Drawing.Point(0, 105)
-$proxyBox.Size = New-Object System.Drawing.Size(505, 165)
-$optionsPage.Controls.Add($proxyBox)
+$inviteBox = New-Object System.Windows.Forms.GroupBox
+$inviteBox.Text = 'Seu convite para a saida'
+$inviteBox.Location = New-Object System.Drawing.Point(0, 105)
+$inviteBox.Size = New-Object System.Drawing.Size(505, 120)
+$optionsPage.Controls.Add($inviteBox)
 
-$radioProxyFree = New-Object System.Windows.Forms.RadioButton
-$radioProxyFree.Text = 'Proxy gratuita, escolhida e testada sozinha'
-$radioProxyFree.Location = New-Object System.Drawing.Point(15, 22)
-$radioProxyFree.AutoSize = $true
-$radioProxyFree.Checked = $true
-$proxyBox.Controls.Add($radioProxyFree)
+$inviteHintLabel = New-Object System.Windows.Forms.Label
+$inviteHintLabel.Text = 'Cole o convite que voce recebeu de quem administra a saida. Ele vale poucos usos e nao da acesso a mais nada. Sem ele nao da para montar o tunel.'
+$inviteHintLabel.Location = New-Object System.Drawing.Point(15, 25)
+$inviteHintLabel.Size = New-Object System.Drawing.Size(470, 40)
+$inviteHintLabel.ForeColor = [System.Drawing.Color]::DimGray
+$inviteBox.Controls.Add($inviteHintLabel)
 
-$freeHintLabel = New-Object System.Windows.Forms.Label
-$freeHintLabel.Text = 'Nao precisa instalar nada. O plugin testa varias e usa a que passar.'
-$freeHintLabel.ForeColor = [System.Drawing.Color]::Gray
-$freeHintLabel.Location = New-Object System.Drawing.Point(33, 42)
-$freeHintLabel.AutoSize = $true
-$proxyBox.Controls.Add($freeHintLabel)
-
-$radioProxyTor = New-Object System.Windows.Forms.RadioButton
-$radioProxyTor.Text = 'Tor (instalo e deixo rodando sozinho)'
-$radioProxyTor.Location = New-Object System.Drawing.Point(15, 62)
-$radioProxyTor.AutoSize = $true
-$proxyBox.Controls.Add($radioProxyTor)
-
-$torHintLabel = New-Object System.Windows.Forms.Label
-$torHintLabel.Text = 'Bem mais estavel que proxy gratuita. Baixo e configuro o Tor puro, sem navegador.'
-$torHintLabel.ForeColor = [System.Drawing.Color]::Gray
-$torHintLabel.Location = New-Object System.Drawing.Point(33, 82)
-$torHintLabel.AutoSize = $true
-$proxyBox.Controls.Add($torHintLabel)
-
-$radioProxyManual = New-Object System.Windows.Forms.RadioButton
-$radioProxyManual.Text = 'Proxy minha:'
-$radioProxyManual.Location = New-Object System.Drawing.Point(15, 106)
-$radioProxyManual.AutoSize = $true
-$proxyBox.Controls.Add($radioProxyManual)
-
-$manualProxyBox = New-Object System.Windows.Forms.TextBox
-$manualProxyBox.Location = New-Object System.Drawing.Point(120, 104)
-$manualProxyBox.Size = New-Object System.Drawing.Size(280, 22)
-$manualProxyBox.Enabled = $false
-$manualProxyBox.Text = 'socks5://host:porta'
-$manualProxyBox.ForeColor = [System.Drawing.Color]::Gray
-$proxyBox.Controls.Add($manualProxyBox)
-
-$manualProxyBox.Add_Enter({
-    if ($manualProxyBox.Text -eq 'socks5://host:porta') {
-        $manualProxyBox.Text = ''
-        $manualProxyBox.ForeColor = [System.Drawing.Color]::Black
-    }
-})
-
-$updateManualEnabled = {
-    $manualProxyBox.Enabled = $radioProxyManual.Checked
-}
-$radioProxyFree.Add_CheckedChanged($updateManualEnabled)
-$radioProxyTor.Add_CheckedChanged($updateManualEnabled)
-$radioProxyManual.Add_CheckedChanged($updateManualEnabled)
-
-$manualHintLabel = New-Object System.Windows.Forms.Label
-$manualHintLabel.Text = 'Formato: socks5://host:porta, http://host:porta ou https://host:porta.'
-$manualHintLabel.ForeColor = [System.Drawing.Color]::Gray
-$manualHintLabel.Location = New-Object System.Drawing.Point(33, 128)
-$manualHintLabel.AutoSize = $true
-$proxyBox.Controls.Add($manualHintLabel)
+$inviteTextBox = New-Object System.Windows.Forms.TextBox
+$inviteTextBox.Location = New-Object System.Drawing.Point(15, 72)
+$inviteTextBox.Size = New-Object System.Drawing.Size(470, 22)
+$inviteBox.Controls.Add($inviteTextBox)
 
 # --- persistencia ---
 $persistBox = New-Object System.Windows.Forms.GroupBox
@@ -369,8 +319,7 @@ param(
     [string] $TargetRoot,
     [bool] $DownloadFresh,
     [string] $ModChoice,
-    [string] $ProxyChoice,
-    [string] $ManualProxy,
+    [string] $Invite,
     [bool] $Permanent,
     [string] $ResolvedTag
 )
@@ -406,15 +355,10 @@ function Select-Target($root) {
     return $root
 }
 
-function Select-Proxy {
-    switch ($ProxyChoice) {
-        'tor' {
-            if (-not (Install-TorDaemon)) { throw 'Nao consegui deixar o Tor pronto. Tente de novo, ou use outra opcao.' }
-            return "socks5://127.0.0.1:$TorSocksPort"
-        }
-        'manual' { return $ManualProxy }
-        default { return '' }
-    }
+# O motor pede o convite pelo terminal; aqui ele ja veio da janela.
+function Read-Invite {
+    if (-not $Invite) { throw 'Sem convite nao da para montar o tunel. Peca um a quem administra a saida e rode de novo.' }
+    return $Invite
 }
 
 function Select-Persistence { return $Permanent }
@@ -436,16 +380,12 @@ function Start-Install {
     $modChoice = if ($radioDownloadVencord.Checked) { 'Vencord' } else { 'Equicord' }
     $downloadFresh = -not ($detectedRoot -and $radioUseExisting.Checked)
 
-    $proxyChoice = 'free'
-    if ($radioProxyTor.Checked) { $proxyChoice = 'tor' }
-    elseif ($radioProxyManual.Checked) { $proxyChoice = 'manual' }
-
-    $manualProxy = $manualProxyBox.Text.Trim()
-    if ($proxyChoice -eq 'manual') {
-        if ($manualProxy -eq '' -or $manualProxy -eq 'socks5://host:porta' -or $manualProxy -notmatch '^(socks5|https?)://[a-z0-9.-]{1,253}:\d{1,5}$') {
-            [System.Windows.Forms.MessageBox]::Show('Endereco de proxy invalido. Use socks5://host:porta.', 'StreamFix', 'OK', 'Warning') | Out-Null
-            return
-        }
+    # Recusar aqui, antes de comecar, e o ponto: sem convite a instalacao vai ate o meio e
+    # morre na hora de montar o tunel, deixando a pessoa com o mod baixado e nada funcionando.
+    $invite = $inviteTextBox.Text.Trim()
+    if (-not $invite) {
+        [System.Windows.Forms.MessageBox]::Show('Cole o convite que voce recebeu de quem administra a saida. Sem ele nao da para montar o tunel.', 'StreamFix', 'OK', 'Warning') | Out-Null
+        return
     }
 
     $optionsPage.Visible = $false
@@ -463,8 +403,7 @@ function Start-Install {
     $ps.AddParameter('TargetRoot', $detectedRoot) | Out-Null
     $ps.AddParameter('DownloadFresh', $downloadFresh) | Out-Null
     $ps.AddParameter('ModChoice', $modChoice) | Out-Null
-    $ps.AddParameter('ProxyChoice', $proxyChoice) | Out-Null
-    $ps.AddParameter('ManualProxy', $manualProxy) | Out-Null
+    $ps.AddParameter('Invite', $invite) | Out-Null
     $ps.AddParameter('Permanent', [bool] $radioPermanent.Checked) | Out-Null
     $ps.AddParameter('ResolvedTag', $script:ResolvedTag) | Out-Null
 

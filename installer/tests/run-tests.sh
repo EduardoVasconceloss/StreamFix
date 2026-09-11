@@ -1127,8 +1127,33 @@ test_guarda_de_sourcing() {
         "SOURCED_OK" "$saida"
 }
 
+# --------------------------------------------------------------------------- tunel ausente
+
+# O Linux nao tem implementacao de tunel (adiado em 11/09/2026), e sem tunel o plugin nao serve
+# para nada. Este teste guarda a guarda: se alguem religar a instalacao antes de o wg-quick
+# existir, isto falha -- em vez de a pessoa descobrir com um plugin instalado que nao funciona.
+test_recusa_de_instalacao() {
+    printf '\n== instalacao recusada enquanto o tunel nao tem Linux ==\n'
+
+    local saida codigo
+    saida="$(cd "$TESTS_DIR" && bash -c 'source "../streamfix-installer.sh"; refuse_install_for_now' < /dev/null 2>&1)"
+    codigo=$?
+
+    assert_true "recusar devolve codigo de falha" [ "$codigo" -ne 0 ]
+    case "$saida" in
+        *tunel*) assert_true "a recusa explica que o motivo e o tunel" true ;;
+        *) assert_true "a recusa explica que o motivo e o tunel" false ;;
+    esac
+
+    # do_install ainda existe, mas nada no caminho de quem instala pode chamar ela.
+    local chamadas
+    chamadas="$(grep -cE '^\s+(1\)|install\))\s+do_install' "$TESTS_DIR/../streamfix-installer.sh")"
+    assert_eq "nenhum caminho de instalacao chama do_install" "0" "$chamadas"
+}
+
 # ------------------------------------------------------------------------------------ main
 
+test_recusa_de_instalacao
 test_pacote_nativo
 test_bootstrap_usuario
 test_flatpak_sistema

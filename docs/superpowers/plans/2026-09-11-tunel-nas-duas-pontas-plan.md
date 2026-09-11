@@ -19,7 +19,7 @@ Diagnóstico de origem em `docs/research/regressao-encoder-inativo-2026-09-03.md
 | 4 — provisionamento | **feita** em 11/09 |
 | 5 — porteiro | **feita** em 11/09 |
 | 6 — assistir | **feita** em 11/09 |
-| 7 — instalador | não iniciada |
+| 7 — instalador | **feita** em 11/09 |
 | 8 — entrega | não iniciada |
 
 **Pendência da fase 0:** a verificação de tipos completa não foi feita. Ela exige compilar
@@ -508,6 +508,66 @@ montada — que é o pior estado possível, porque parece pronto.
 **Como se prova:** os testes de instalador já existem em `installer/tests/`. Acrescentar: sem
 convite, com convite inválido, sem rede, com WireSock já instalado, e — o mais importante —
 **instalação interrompida no meio não pode deixar o plugin ligado sem túnel configurado.**
+
+### O que a fase mediu
+
+`installer/provisiona.mjs` (o provisionador), a cirurgia nos dois instaladores do Windows, e
+`tests/instalador.test.cjs` (18 testes).
+
+**A elevação, que este plano chamava de maior risco em aberto, quase não existe.** Medido em
+11/09, sem elevação: `list`, `status`, `import`, `delete` e `connect` do `wiresock-connect-cli`
+funcionam todos. A única coisa que precisa de administrador é **instalar** o WireSock — e o UAC
+dela é levantado pelo próprio winget (`NTKERNEL.WireSockVPNClient`), não por nós.
+
+**Então o instalador não se auto-eleva, e isso é decisão, não omissão.** Auto-elevar faria o
+`pnpm install` e o build rodarem como administrador, deixando na pasta do mod arquivos que o
+dono da conta não consegue apagar depois. Há teste garantindo que nenhum `-Verb RunAs` volte.
+
+**O `.conf` é apagado depois do import.** Medido: o WireSock guarda cópia própria — `export`
+funciona depois de o arquivo de origem sumir. Então o arquivo com a chave privada vive só o
+tempo do import, e morre num `finally` que roda mesmo quando algo falha no meio.
+
+**Duas coisas que as fases 1 a 6 quebraram sem ninguém notar, e que esta fase achou:**
+
+1. **O instalador copiava dois arquivos, e o plugin virou nove módulos.** Pior, ele achatava o
+   caminho com `Split-Path -Leaf`, então `tunnel/coletor.ts` viraria `coletor.ts` e os imports
+   não resolveriam. Quem instalasse receberia um plugin que **não compila**.
+2. **Ele escrevia `proxy` e `excludedCountries`**, configurações que morreram na fase 0, e não
+   escrevia nenhuma das do túnel. A instalação nasceria sem saída configurada.
+
+Ambas agora têm teste de deriva: um confere a lista contra os arquivos em disco, outro confere
+as configurações escritas contra as que o plugin declara em `definePluginSettings`. Os dois
+foram verificados por mutação — quebram quando o defeito volta.
+
+**A ordem virou o critério de aceitação.** "Instalação interrompida não pode deixar o plugin
+ligado sem túnel" não é uma checagem, é uma ordem: toolchain → **túnel** → plugin → build →
+configurações. Ativar o plugin é o último passo de todos, então qualquer interrupção deixa a
+pessoa sem plugin em vez de com um plugin ligado e inútil. O teste lê `Invoke-Install` e exige
+essa ordem.
+
+**Uma decisão de arquitetura:** o provisionador é JavaScript, não PowerShell. Medir MTU, gerar
+chave, trocar o convite por um endereço e montar o `.conf` já existem em TypeScript com 71
+testes. Reimplementar em PowerShell seria duplicar lógica testada numa linguagem sem teste
+nenhum aqui. O PowerShell fica com o que só ele faz. O convite entra por **stdin**, porque
+argumento de linha de comando aparece na lista de processos de qualquer conta da máquina.
+
+**Ganhou uma saída de emergência:** `--mtu-do-caminho` pula a medição. Serve ao teste (que não
+pode depender de ping para a internet) e a quem tem ICMP bloqueado na saída — ficar sem túnel
+por não conseguir medir seria pior do que usar um valor sabido.
+
+**O instalador de Linux passou a recusar, em vez de instalar algo quebrado.** Ele tem os dois
+defeitos acima e o Linux não tem túnel nenhum (adiado em 11/09). Recusar dizendo o motivo é
+melhor do que entregar um plugin que não funciona e deixar a pessoa descobrir sozinha. Há
+teste garantindo que nenhum caminho de instalação chame `do_install` enquanto isso durar.
+
+**O que não foi feito, e é honesto dizer:** o instalador nunca foi executado de ponta a ponta.
+Rodá-lo instalaria WireSock, mexeria no checkout do mod que o Discord do usuário carrega e
+trocaria o perfil `streamfix-santiago` que está no ar — decisão dele, não minha. O que foi
+exercitado de verdade: o provisionador inteiro contra uma saída de mentira, e o `.conf` que ele
+gera importado no WireSock real e depois removido.
+
+**Uma falha pré-existente nos testes de Linux** ("o resources injetado continua aparecendo na
+descoberta") já estava lá antes desta fase: 92/93 antes, 95/96 depois. Não foi tocada.
 
 ---
 

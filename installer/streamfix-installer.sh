@@ -1375,6 +1375,24 @@ do_restore_everything() {
     ok "Tudo restaurado. Seu Discord voltou ao normal."
 }
 
+# O tunel ainda nao tem implementacao para Linux: `tunnel/controle` fala com o WireSock, que e
+# Windows, e o equivalente com wg-quick ficou adiado por decisao de 11/09/2026.
+#
+# Sem ele, instalar aqui entrega um plugin que nem compila -- este script copia dois arquivos e
+# o plugin virou nove modulos nas fases 1 a 6 -- e que, se compilasse, nao teria tunel nenhum.
+# Recusar dizendo por que e melhor do que instalar algo quebrado e deixar a pessoa descobrir
+# sozinha, que e o modo de falha que este projeto mais pagou caro.
+#
+# Quando o Linux voltar, isto sai junto com a `Controle` por wg-quick.
+refuse_install_for_now() {
+    printf '\n  %sA instalacao em Linux esta fora do ar por enquanto.%s\n\n' "$C_YELLOW" "$C_OFF"
+    printf '  O StreamFix passou a depender de um tunel WireGuard, e o lado Linux dele ainda\n'
+    printf '  nao foi escrito. Instalar agora deixaria voce com um plugin que nao funciona.\n\n'
+    printf '  %sPara assistir a transmissoes hoje, o caminho e o Windows.%s\n' "$C_DIM" "$C_OFF"
+    printf '  %sAcompanhe em https://github.com/EduardoVasconceloss/StreamFix%s\n' "$C_DIM" "$C_OFF"
+    return 1
+}
+
 main_menu() {
     local root
     root="$(find_checkout || true)"
@@ -1389,7 +1407,7 @@ main_menu() {
     local choice
     read -r -p "  Escolha: " choice
     case "$choice" in
-        1) do_install "$root" ;;
+        1) refuse_install_for_now ;;
         2) do_uninstall ;;
         3) do_restore_everything ;;
         *) printf '  %sAte mais.%s\n' "$C_DIM" "$C_OFF" ;;
@@ -1403,7 +1421,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     ensure_not_root
     banner
     case "$MODE" in
-        install) do_install "$(find_checkout || true)" ;;
+        install) refuse_install_for_now ;;
         uninstall) do_uninstall ;;
         restore) do_restore_everything ;;
         *) main_menu ;;

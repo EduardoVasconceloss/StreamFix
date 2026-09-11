@@ -35,7 +35,19 @@ param(
     # instalador e os arquivos que ele baixa (Resolve-RepoRaw) vem sempre da mesma revisao --
     # uma segunda consulta independente correria o risco de pegar uma release mais nova que
     # saiu no meio do caminho.
-    [string] $ResolvedTag = ''
+    [string] $ResolvedTag = '',
+
+    # A saida que provisiona o tunel. Quem monta a propria saida aponta para a dela.
+    [string] $ExitUrl = 'http://159.112.151.37:8787/registrar',
+
+    # A chave publica esperada da saida. O registro nao tem TLS (a saida e um IP, sem dominio),
+    # entao esta chave e o que impede substituicao de resposta -- alguem no meio do caminho
+    # devolvendo a propria saida e levando a midia de quem instalou. Vazia = sem conferencia.
+    [string] $ExitKey = '',
+
+    # Nome do perfil no WireSock. Muda junto com o nome do arquivo .conf, que e de onde o
+    # WireSock tira o nome de verdade.
+    [string] $TunnelProfile = 'streamfix-santiago'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,7 +72,19 @@ foreach ($envVar in @('USERPROFILE', 'TEMP')) {
 # nao revisado, sem precisar editar isto a cada release -- Resolve-RepoRaw consulta a API do
 # GitHub e resolve uma vez por execucao, memoizando o resultado.
 $script:RepoRaw = $null
-$PluginFiles = @('streamFix/index.tsx', 'streamFix/native.ts')
+# As fases 1 a 6 quebraram o plugin em modulos. Copiar so os dois de cima deixaria um plugin
+# que nem compila -- os imports de ./tunnel/ nao resolveriam.
+$PluginFiles = @(
+    'streamFix/index.tsx',
+    'streamFix/native.ts',
+    'streamFix/tunnel/coletor.ts',
+    'streamFix/tunnel/controle.ts',
+    'streamFix/tunnel/entrada.ts',
+    'streamFix/tunnel/monitor.ts',
+    'streamFix/tunnel/observador.ts',
+    'streamFix/tunnel/perfil.ts',
+    'streamFix/tunnel/porteiro.ts'
+)
 $PluginDirName = 'streamFix'
 $LegacyPluginDirName = 'goLiveBypass'
 $DiscordNames = @('Discord', 'DiscordCanary', 'DiscordPTB')
@@ -584,8 +608,14 @@ function Copy-Plugin($root) {
     $stale = Join-Path $target 'index.ts'
     if (Test-Path -LiteralPath $stale) { Remove-Item -LiteralPath $stale -Force }
 
+    # Split-Path -Leaf achatava tudo na raiz do plugin, e ./tunnel/coletor virava ./coletor --
+    # os imports nao resolveriam e o build morreria. O caminho relativo tem que sobreviver.
     foreach ($file in $PluginFiles) {
-        Save-Text (Join-Path $target (Split-Path -Leaf $file)) (Get-RepoFile $file)
+        $relative = $file -replace '^streamFix/', ''
+        $dest = Join-Path $target ($relative -replace '/', '\')
+        $parent = Split-Path -Parent $dest
+        if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        Save-Text $dest (Get-RepoFile $file)
     }
 }
 
@@ -653,10 +683,17 @@ function Invoke-Install($root) {
 
     Remove-LegacyTor
 
-    $proxy = Select-Proxy
     $permanent = Select-Persistence
 
+    # A ORDEM E O DESENHO. O tunel vem antes do plugin, e as configuracoes (que e onde o plugin
+    # fica `enabled: true`) vem por ultimo. Assim uma instalacao interrompida no meio deixa a
+    # pessoa sem plugin -- nunca com um plugin ligado e sem tunel, que e o pior estado possivel
+    # porque parece pronto.
+    #
+    # O toolchain vem primeiro de todos porque o provisionador roda em Node.
     Install-Toolchain $root
+    $tunnel = Install-Tunnel $ExitUrl $ExitKey $TunnelProfile
+
     Copy-Plugin $root
     Build-Mod $root
 
@@ -670,17 +707,13 @@ function Invoke-Install($root) {
 
     # Com o Discord fechado: aberto, ele regrava o settings.json a partir da memoria e
     # apaga o que escrevemos aqui.
-    Set-PluginSettings $root $proxy
+    Set-PluginSettings $root $tunnel
 
     Start-Discord
 
     Write-Host ''
     Write-Ok 'Pronto. O plugin ja vem ativado, nao precisa mexer em nada.'
-    if ($proxy) {
-        Write-Host "  Proxy: $proxy" -ForegroundColor DarkGray
-    } else {
-        Write-Host '  Proxy: gratuita, escolhida e testada sozinha a cada abertura' -ForegroundColor DarkGray
-    }
+    Write-Host "  Sua saida: $($tunnel.endpoint)" -ForegroundColor DarkGray
     Write-Host '  Entre numa call e use Go Live ou a camera.' -ForegroundColor DarkGray
 
     if (-not $permanent) {
@@ -744,7 +777,7 @@ function Get-ModSettingsFile($root) {
     return (Join-Path $env:APPDATA "$mod\settings\settings.json")
 }
 
-function Set-PluginSettings($root, $proxy) {
+function Set-PluginSettings($root, $tunnel) {
     $file = Get-ModSettingsFile $root
 
     $settings = $null
@@ -774,10 +807,24 @@ function Set-PluginSettings($root, $proxy) {
     $existing = $settings.plugins.PSObject.Properties['StreamFix']
     $plugin = if ($existing) { $existing.Value } else { [pscustomobject]@{} }
 
+    # `proxy` e `excludedCountries` sairam com a proxy de gateway (fase 0): escrever aqui um
+    # campo que o plugin nao le mais so deixaria lixo no settings.json de quem atualiza.
+    foreach ($dead in @('proxy', 'excludedCountries')) {
+        if ($plugin.PSObject.Properties[$dead]) { $plugin.PSObject.Properties.Remove($dead) }
+    }
+
     $plugin | Add-Member -NotePropertyName enabled -NotePropertyValue $true -Force
-    $plugin | Add-Member -NotePropertyName proxy -NotePropertyValue $proxy -Force
-    if (-not $plugin.PSObject.Properties['excludedCountries']) {
-        $plugin | Add-Member -NotePropertyName excludedCountries -NotePropertyValue 'BR' -Force
+    $plugin | Add-Member -NotePropertyName exigirTunel -NotePropertyValue $true -Force
+    $plugin | Add-Member -NotePropertyName perfilDoTunel -NotePropertyValue $tunnel.perfil -Force
+
+    # Vem da resposta da saida, nao de um padrao escrito aqui: e contra este endereco que o
+    # porteiro confere o que o Discord reporta, e um valor chutado recusaria transmissao boa.
+    $plugin | Add-Member -NotePropertyName enderecoDaSaida -NotePropertyValue $tunnel.endpoint -Force
+
+    # Ligado por padrao (D9). Quem so assiste desliga nas configuracoes e passa a subir o tunel
+    # so na entrada de cada transmissao.
+    if (-not $plugin.PSObject.Properties['tunelPermanente']) {
+        $plugin | Add-Member -NotePropertyName tunelPermanente -NotePropertyValue $true -Force
     }
 
     $settings.plugins | Add-Member -NotePropertyName StreamFix -NotePropertyValue $plugin -Force
@@ -834,72 +881,11 @@ function Select-Target($root) {
     }
 }
 
-# =============================================================================== tor local
-#
-# Tor em vez de proxy gratuita: mais estavel numa sessao longa (gateway fica fixo numa saida
-# so; uma proxy que degrada no meio deixa o WebSocket meio-morto). Sem bridge/pluggable
-# transport: e so o Go Live do Discord que esta bloqueado, nao a rede Tor em si no Brasil.
+# =============================================================================== ferramentas
 
 $TorRoot = Join-Path $env:LOCALAPPDATA 'StreamFix\Tor'
 $LegacyTorRoot = Join-Path $env:LOCALAPPDATA 'GoLiveBypass\Tor'
 $TorExe = Join-Path $TorRoot 'tor\tor.exe'
-$TorRc = Join-Path $TorRoot 'torrc'
-$TorSocksPort = 9050
-
-# Limpa uma instalacao anterior do Tor sob o nome antigo (GoLiveBypass), atalho de autostart
-# incluso -- so remove; quem quiser o Tor de volta ganha um novo em $TorRoot na proxima vez
-# que escolher essa opcao.
-function Remove-LegacyTor {
-    if (-not (Test-Path -LiteralPath $LegacyTorRoot)) { return }
-
-    Write-Step 'Removendo a instalacao antiga do Tor (GoLiveBypass -> StreamFix)'
-
-    try {
-        $legacyExe = Join-Path $LegacyTorRoot 'tor\tor.exe'
-        Get-Process -Name 'tor' -ErrorAction SilentlyContinue |
-            Where-Object { $_.Path -and $_.Path.Equals($legacyExe, [StringComparison]::OrdinalIgnoreCase) } |
-            Stop-Process -Force -ErrorAction SilentlyContinue
-    } catch { }
-
-    $legacyShortcut = Join-Path ([Environment]::GetFolderPath('Startup')) 'GoLiveBypass Tor.lnk'
-    Remove-Item -LiteralPath $legacyShortcut -Force -ErrorAction SilentlyContinue
-
-    Start-Sleep -Milliseconds 300
-    Remove-Item -LiteralPath $LegacyTorRoot -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-function Test-PortOpen($port, $timeoutMs = 500) {
-    $client = New-Object System.Net.Sockets.TcpClient
-    try {
-        $result = $client.BeginConnect('127.0.0.1', $port, $null, $null)
-        return ($result.AsyncWaitHandle.WaitOne($timeoutMs) -and $client.Connected)
-    } catch {
-        return $false
-    } finally {
-        $client.Close()
-    }
-}
-
-# Fixos, nao descobertos em tempo real. dist.torproject.org serve tanto o binario quanto o
-# sha256sums-signed-build.txt do mesmo jeito (HTTPS simples, sem checagem de chave PGP): um
-# review adversarial apontou certo que buscar o hash "esperado" da mesma origem que o binario
-# nao prova nada contra uma origem comprometida, porque as duas respostas vem do mesmo lugar
-# nao confiavel. Conferimos este hash a mao, uma vez, contra o sha256sums-signed-build.txt de
-# https://dist.torproject.org/torbrowser/15.0.20/ antes de publicar. Trocar a versao aqui
-# exige repetir essa conferencia manual e faz parte de cortar uma release nova do instalador.
-$TorVersion = '15.0.20'
-$TorArchiveSha256 = 'd59bff934e3ad876e1623e24ae60c19aeea56f50178093b9f86fba230639f949'
-
-# Fallback sem winget: instalador oficial de cada ferramenta, versao e hash fixos (mesma logica
-# do Tor acima). Trocar a versao aqui exige conferir o hash de novo contra a fonte oficial.
-$NodeVersion = '24.19.0'
-$NodeMsiUrl = "https://nodejs.org/dist/v$NodeVersion/node-v$NodeVersion-x64.msi"
-$NodeMsiSha256 = 'f0f66c2a80c08a30a5ab5179ee9ea9e45f9b46289436a8cc87ff833b852db351'
-
-$GitTag = 'v2.55.0.windows.4'
-$GitExeVersion = '2.55.0.4'
-$GitExeUrl = "https://github.com/git-for-windows/git/releases/download/$GitTag/Git-$GitExeVersion-64-bit.exe"
-$GitExeSha256 = '0cbc0b34a74b3aff3ace0910328549155a770e228331b19cb1498218a120e7ff'
 
 function Install-ToolDirect($tool) {
     $spec = if ($tool -eq 'git') {
@@ -933,175 +919,30 @@ function Install-ToolDirect($tool) {
     }
 }
 
-# CONNECT SOCKS5 real ate um host HTTPS, com autenticacao TLS -- so a porta TCP aberta nao
-# prova que o Tor ja carrega trafego (o listener sobe bem antes do circuito ficar pronto).
-function Test-SocksHttpsConnect($socksPort, $targetHost, $targetPort, $timeoutMs) {
-    $client = $null
+# O Tor saiu com a proxy de gateway (fase 0). As duas funcoes abaixo ficam porque quem instalou
+# uma versao antiga tem um Tor rodando na maquina, e apagar o codigo que o remove deixaria essa
+# pessoa com um daemon orfao para sempre. Elas so removem; nada mais instala Tor.
+
+# Limpa uma instalacao anterior do Tor sob o nome antigo (GoLiveBypass), atalho de autostart
+# incluso -- so remove; quem quiser o Tor de volta ganha um novo em $TorRoot na proxima vez
+# que escolher essa opcao.
+function Remove-LegacyTor {
+    if (-not (Test-Path -LiteralPath $LegacyTorRoot)) { return }
+
+    Write-Step 'Removendo a instalacao antiga do Tor (GoLiveBypass -> StreamFix)'
+
     try {
-        $client = New-Object System.Net.Sockets.TcpClient
-        $connectTask = $client.ConnectAsync('127.0.0.1', $socksPort)
-        if (-not $connectTask.Wait($timeoutMs) -or -not $client.Connected) { return $false }
+        $legacyExe = Join-Path $LegacyTorRoot 'tor\tor.exe'
+        Get-Process -Name 'tor' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -and $_.Path.Equals($legacyExe, [StringComparison]::OrdinalIgnoreCase) } |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+    } catch { }
 
-        $stream = $client.GetStream()
-        $stream.ReadTimeout = $timeoutMs
-        $stream.WriteTimeout = $timeoutMs
+    $legacyShortcut = Join-Path ([Environment]::GetFolderPath('Startup')) 'GoLiveBypass Tor.lnk'
+    Remove-Item -LiteralPath $legacyShortcut -Force -ErrorAction SilentlyContinue
 
-        # Saudacao SOCKS5: versao 5, 1 metodo oferecido, metodo 0 (sem autenticacao)
-        $stream.Write([byte[]](5, 1, 0), 0, 3)
-        $greeting = New-Object byte[] 2
-        if ($stream.Read($greeting, 0, 2) -ne 2 -or $greeting[0] -ne 5 -or $greeting[1] -ne 0) { return $false }
-
-        # Pedido CONNECT por nome de dominio (tipo 3), formato TLV do proprio SOCKS5
-        $hostBytes = [Text.Encoding]::ASCII.GetBytes($targetHost)
-        $request = [Collections.Generic.List[byte]]::new()
-        $request.AddRange([byte[]](5, 1, 0, 3, [byte]$hostBytes.Length))
-        $request.AddRange($hostBytes)
-        $request.Add([byte](($targetPort -shr 8) -band 0xFF))
-        $request.Add([byte]($targetPort -band 0xFF))
-        $requestBytes = $request.ToArray()
-        $stream.Write($requestBytes, 0, $requestBytes.Length)
-
-        $reply = New-Object byte[] 10
-        $read = $stream.Read($reply, 0, 10)
-        if ($read -lt 2 -or $reply[1] -ne 0) { return $false }
-
-        # Protocolo TLS explicito: sem isso, o SChannel falha ("Falha a uma chamada a SSPI")
-        # rodando de dentro do .exe compilado, mesmo funcionando normal via powershell.exe puro.
-        $ssl = New-Object System.Net.Security.SslStream($stream, $false)
-        $ssl.AuthenticateAsClient($targetHost, $null, [System.Security.Authentication.SslProtocols]::Tls12, $false)
-        return $ssl.IsAuthenticated
-    } catch {
-        return $false
-    } finally {
-        if ($client) { $client.Close() }
-    }
-}
-
-function Test-TorCircuit($timeoutMs) {
-    $deadline = (Get-Date).AddMilliseconds($timeoutMs)
-    do {
-        if (Test-SocksHttpsConnect $TorSocksPort 'www.torproject.org' 443 5000) { return $true }
-        Start-Sleep -Milliseconds 1000
-    } while ((Get-Date) -lt $deadline)
-
-    return $false
-}
-
-function Start-TorDaemon {
-    if (-not (Test-PortOpen $TorSocksPort)) {
-        if (-not (Test-Path -LiteralPath $TorExe)) { return $false }
-
-        Start-Process -FilePath $TorExe -ArgumentList @('-f', $TorRc) -WorkingDirectory $TorRoot -WindowStyle Hidden
-
-        $portReady = $false
-        for ($i = 0; $i -lt 20; $i++) {
-            if (Test-PortOpen $TorSocksPort) { $portReady = $true; break }
-            Start-Sleep -Milliseconds 500
-        }
-        if (-not $portReady) { return $false }
-    }
-
-    # 45s de folga: o circuito real pode levar 15-20s num boot frio, e 30s as vezes nao bastou.
-    return Test-TorCircuit 45000
-}
-
-# Atalho na pasta Inicializar em vez de Tarefa Agendada: Register-ScheduledTask (e schtasks.exe
-# cru) deram "Acesso negado" numa conta administradora comum, sem elevar nada.
-function Register-TorAutostart {
-    try {
-        $startup = [Environment]::GetFolderPath('Startup')
-        $vbsPath = Join-Path $TorRoot 'start-hidden.vbs'
-        $shortcutPath = Join-Path $startup 'StreamFix Tor.lnk'
-
-        # wscript.exe + Run(...,0,...) sobe o tor.exe sem console nenhum no login. VBScript nao
-        # escapa "\": aspas duplas precisam virar "" pra sobreviver dentro da string.
-        $runLine = 'shell.Run """' + $TorExe + '"" -f ""' + $TorRc + '""", 0, False'
-        $vbsLines = @(
-            'Set shell = CreateObject("WScript.Shell")'
-            $runLine
-        )
-        Save-Text $vbsPath ($vbsLines -join "`n")
-
-        $shell = New-Object -ComObject WScript.Shell
-        $shortcut = $shell.CreateShortcut($shortcutPath)
-        $shortcut.TargetPath = 'wscript.exe'
-        $shortcut.Arguments = "`"$vbsPath`""
-        $shortcut.WorkingDirectory = $TorRoot
-        $shortcut.Description = 'Sobe o Tor local do StreamFix antes do Discord abrir.'
-        $shortcut.Save()
-
-        return $true
-    } catch {
-        Write-Warn "Nao consegui deixar o Tor iniciando sozinho no login: $($_.Exception.Message)"
-        Write-Host '  Vai continuar funcionando nesta sessao; para as proximas, rode o instalador de novo.' -ForegroundColor DarkGray
-        return $false
-    }
-}
-
-function Install-TorDaemon {
-    # Nao basta a porta estar aberta: pode ser um Tor de outra origem sem circuito pronto, ou
-    # o nosso travado. Start-TorDaemon confere trafego real antes de devolver sucesso.
-    if (Test-PortOpen $TorSocksPort) {
-        Write-Step 'Ja tem algo escutando na porta 9050, confirmando que carrega trafego de verdade'
-        if (Start-TorDaemon) {
-            Write-Ok 'Tor ja estava rodando e respondendo, nada para instalar.'
-            return $true
-        }
-        Write-Warn 'Tem algo na porta 9050, mas nao parece um Tor funcional. Tentando reinstalar.'
-    }
-
-    if (Test-Path -LiteralPath $TorExe) {
-        Write-Step 'Tor ja baixado, so iniciando'
-        if (Start-TorDaemon) {
-            Register-TorAutostart | Out-Null
-            return $true
-        }
-        Write-Warn 'O Tor nao respondeu na porta 9050 a tempo.'
-        return $false
-    }
-
-    if (-not (Test-Tool 'tar')) {
-        throw 'Falta o tar.exe (vem com o Windows 10 versao 1803 ou mais nova). Atualize o Windows, ou use Proxy minha com um Tor instalado a mao.'
-    }
-
-    $archiveFileName = "tor-expert-bundle-windows-x86_64-$TorVersion.tar.gz"
-    $archiveUrl = "https://dist.torproject.org/torbrowser/$TorVersion/$archiveFileName"
-    $archivePath = Join-Path $env:TEMP $archiveFileName
-
-    Write-Step "Baixando o Tor $TorVersion (uns 20 MB)"
-    Invoke-WebRequest -UseBasicParsing -Uri $archiveUrl -OutFile $archivePath
-
-    # Contra o hash fixo no script (conferido a mao antes de publicar), nao um hash buscado
-    # agora da mesma origem que serviu o binario -- isso nao provaria nada contra origem comprometida.
-    Write-Step 'Conferindo o hash do download'
-    $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actualHash -ne $TorArchiveSha256) {
-        Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
-        throw 'O hash do Tor baixado nao bate com o hash fixo no instalador. Abortando: o arquivo pode ter sido adulterado no caminho.'
-    }
-
-    New-Item -ItemType Directory -Path $TorRoot -Force | Out-Null
-    Write-Step 'Extraindo'
-    Invoke-Native { tar -xzf $archivePath -C $TorRoot }
-    Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
-
-    if (-not (Test-Path -LiteralPath $TorExe)) { throw 'O pacote baixado do Tor nao trouxe o tor.exe esperado.' }
-
-    # O parser do torrc trata "\" entre aspas como escape de string C e quebra num path do
-    # Windows; barra normal funciona sem esse problema.
-    $dataDir = (Join-Path $TorRoot 'data') -replace '\\', '/'
-    $torrcLines = @(
-        "SocksPort 127.0.0.1:$TorSocksPort"
-        "DataDirectory `"$dataDir`""
-        'AvoidDiskWrites 1'
-    )
-    Save-Text $TorRc ($torrcLines -join "`n")
-
-    if (-not (Start-TorDaemon)) { throw 'O Tor nao respondeu na porta 9050 a tempo depois de instalado.' }
-
-    Register-TorAutostart | Out-Null
-    Write-Ok 'Tor instalado e rodando. Vai subir sozinho a cada login, antes do Discord abrir.'
-    return $true
+    Start-Sleep -Milliseconds 300
+    Remove-Item -LiteralPath $LegacyTorRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # So mexe no Tor que o proprio StreamFix instalou (path exato), nunca num tor.exe de outra
@@ -1125,36 +966,171 @@ function Remove-TorDaemon {
     Remove-Item -LiteralPath $TorRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-function Select-Proxy {
-    if ($Yes) { return '' }
+# =============================================================================== tunel
 
-    Write-Host ''
-    Write-Host '  Como o bypass vai sair para fora do Brasil?' -ForegroundColor White
-    Write-Host ''
-    Write-Host '    [1] Proxy gratuita, escolhida e testada sozinha' -ForegroundColor Green
-    Write-Host '        Nao precisa instalar nada. O plugin testa varias e usa a que passar.' -ForegroundColor DarkGray
-    Write-Host '    [2] Tor (instalo e deixo rodando sozinho)' -ForegroundColor Cyan
-    Write-Host '        Bem mais estavel que proxy gratuita. Baixo e configuro o Tor puro, sem navegador.' -ForegroundColor DarkGray
-    Write-Host '    [3] Proxy minha' -ForegroundColor Cyan
-    Write-Host '        Voce informa o endereco, no formato socks5://host:porta.' -ForegroundColor DarkGray
-    Write-Host ''
+# O tunel e o produto agora. Estas funcoes fazem o que so o PowerShell faz -- achar o WireSock,
+# instalar o que falta, importar o perfil. Toda a decisao (medir MTU, gerar chave, trocar o
+# convite por um endereco, montar o .conf) vive em installer/provisiona.mjs, que chama o
+# TypeScript ja testado em vez de reimplementar nada aqui.
 
-    switch (Read-Host '  Escolha') {
-        '2' {
-            if (-not (Install-TorDaemon)) { throw 'Nao consegui deixar o Tor pronto. Tente de novo, ou use outra opcao.' }
+$WireSockWingetId = 'NTKERNEL.WireSockVPNClient'
+$DefaultTunnelProfile = 'streamfix-santiago'
 
-            # Vazio significaria "automatico" pro plugin, que podia acabar saindo por outra
-            # proxy sem avisar. Endereco explicito forca o uso do Tor que acabamos de subir.
-            return "socks5://127.0.0.1:$TorSocksPort"
+# O fecho transitivo do provisionador: ele e os modulos que ele importa. Precisam ser gravados
+# com o mesmo caminho relativo, senao os imports nao resolvem.
+$ProvisioningFiles = @(
+    'installer/provisiona.mjs',
+    'streamFix/tunnel/perfil.ts',
+    'provisionamento/cliente.ts',
+    'provisionamento/chaves.ts'
+)
+
+function Find-WireSockCli {
+    $candidates = @(
+        (Join-Path $env:ProgramFiles 'WireSock Secure Connect\command-line\wiresock-connect-cli.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'WireSock Secure Connect\command-line\wiresock-connect-cli.exe')
+    )
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
+    }
+    return $null
+}
+
+# A UNICA elevacao do instalador, e ela nao e nossa: o winget levanta o proprio UAC para este
+# install e devolve o controle sem elevar o resto.
+#
+# Medido em 11/09: list, status, import, delete e connect do wiresock-connect-cli funcionam SEM
+# elevacao. Por isso o instalador nao se auto-eleva -- se elevasse, o pnpm e o build rodariam
+# como administrador e deixariam arquivos que o dono da conta nao consegue apagar depois.
+function Install-WireSock {
+    Write-Step 'Instalando o WireSock (vai aparecer uma janela do Windows pedindo permissao)'
+
+    if (-not (Test-Tool 'winget')) {
+        throw "Preciso do WireSock e nao achei o winget para instala-lo. Instale o WireSock a mao em https://www.wiresock.net e rode este instalador de novo."
+    }
+
+    Invoke-Native { winget install --id $WireSockWingetId --exact --silent --accept-package-agreements --accept-source-agreements }
+
+    Update-PathFromEnvironment
+    $cli = Find-WireSockCli
+    if (-not $cli) {
+        throw "O winget terminou mas nao achei o wiresock-connect-cli.exe. Se a janela de permissao foi recusada, rode de novo e aceite."
+    }
+    Write-Ok 'WireSock instalado.'
+    return $cli
+}
+
+function Get-WireSock {
+    $cli = Find-WireSockCli
+    if ($cli) {
+        Write-Step 'WireSock ja instalado'
+        return $cli
+    }
+    return Install-WireSock
+}
+
+# Grava o provisionador e seus modulos num diretorio temporario, preservando o caminho
+# relativo. Get-RepoFile le do checkout local quando ha um, e baixa da release quando nao ha --
+# um caminho so para os dois casos.
+function Save-Provisioner {
+    $dir = Join-Path $env:TEMP "streamfix-prov-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+    foreach ($rel in $ProvisioningFiles) {
+        $dest = Join-Path $dir ($rel -replace '/', '\')
+        $parent = Split-Path -Parent $dest
+        if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        Save-Text $dest (Get-RepoFile $rel)
+    }
+    return $dir
+}
+
+function Read-Invite {
+    Write-Host ''
+    Write-Host '  Cole o convite que voce recebeu de quem administra a saida.' -ForegroundColor White
+    Write-Host '  Ele vale poucos usos e nao da acesso a mais nada.' -ForegroundColor DarkGray
+    $invite = (Read-Host '  Convite').Trim()
+    if (-not $invite) { throw 'Sem convite nao da para montar o tunel. Peca um a quem administra a saida e rode de novo.' }
+    return $invite
+}
+
+# Chama o provisionador. O convite vai por stdin de proposito: argumento de linha de comando
+# aparece na lista de processos para qualquer usuario da maquina.
+function Invoke-Provisioner($provisionerDir, $invite, $url, $exitKey, $confPath) {
+    $script = Join-Path $provisionerDir 'installer\provisiona.mjs'
+    $args = @($script, '--url', $url, '--arquivo', $confPath)
+    if ($exitKey) { $args += @('--chave-da-saida', $exitKey) }
+
+    $psi = New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName = 'node'
+    foreach ($a in $args) { $psi.ArgumentList.Add($a) }
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+
+    $proc = [Diagnostics.Process]::Start($psi)
+    $proc.StandardInput.Write($invite)
+    $proc.StandardInput.Close()
+    $out = $proc.StandardOutput.ReadToEnd()
+    $err = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+
+    foreach ($line in ($err -split "`n")) {
+        if ($line.Trim()) { Write-Step $line.Trim() }
+    }
+
+    $result = $null
+    foreach ($line in ($out -split "`n")) {
+        if ($line.Trim().StartsWith('{')) {
+            try { $result = $line.Trim() | ConvertFrom-Json } catch { }
         }
-        '3' {
-            $manual = (Read-Host '  Endereco da proxy').Trim()
-            if ($manual -notmatch '^(socks5|https?)://[a-z0-9.-]{1,253}:\d{1,5}$') {
-                throw 'Formato invalido. Use socks5://host:porta.'
-            }
-            return $manual
-        }
-        default { return '' }
+    }
+    if (-not $result) { throw "O provisionador nao respondeu nada que eu entenda. Saida: $out" }
+    if (-not $result.ok) { throw "Nao consegui montar o tunel: $($result.erro)" }
+    return $result
+}
+
+# O nome do perfil no WireSock vem do NOME DO ARQUIVO, nao do que se pede no import -- e o
+# import se recusa a sobrescrever. Por isso: apagar antes, e so entao importar.
+function Import-TunnelProfile($cli, $confPath, $profile) {
+    $existing = & $cli list 2>&1 | Out-String
+    if ($existing -match [regex]::Escape($profile)) {
+        Write-Step "Substituindo o perfil $profile que ja existia"
+        & $cli delete $profile | Out-Null
+    }
+
+    $output = & $cli import $confPath 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "O WireSock recusou o perfil: $output" }
+
+    $after = & $cli list 2>&1 | Out-String
+    if ($after -notmatch [regex]::Escape($profile)) {
+        throw "Importei o perfil mas o WireSock nao o lista. Saida: $after"
+    }
+}
+
+# Monta o tunel inteiro. Roda ANTES de o plugin ser copiado e ativado: se qualquer coisa aqui
+# falhar, a pessoa fica sem plugin em vez de ficar com um plugin ligado e sem tunel -- que e o
+# pior estado possivel, porque parece pronto.
+function Install-Tunnel($url, $exitKey, $profile) {
+    if (-not $profile) { $profile = $DefaultTunnelProfile }
+
+    $cli = Get-WireSock
+    $invite = Read-Invite
+    $provisionerDir = Save-Provisioner
+
+    # O arquivo nasce com a chave privada dentro. Ele vive o tempo do import e morre no finally,
+    # ate quando algo falha no meio -- o WireSock guarda copia propria (medido em 11/09).
+    $confPath = Join-Path $env:TEMP "$profile.conf"
+    try {
+        $result = Invoke-Provisioner $provisionerDir $invite $url $exitKey $confPath
+        Import-TunnelProfile $cli $confPath $result.perfil
+
+        Write-Ok "Tunel pronto: $($result.endereco) pela saida $($result.endpoint)"
+        Write-Host "  MTU medido: caminho $($result.mtuDoCaminho), tunel $($result.mtuDoTunel)" -ForegroundColor DarkGray
+        return $result
+    } finally {
+        Remove-Item -LiteralPath $confPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $provisionerDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
