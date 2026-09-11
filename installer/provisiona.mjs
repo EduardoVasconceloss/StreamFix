@@ -18,6 +18,8 @@
  * Uso:
  *   echo <convite> | node provisiona.mjs --url http://IP:8787/registrar --arquivo C:\...\p.conf
  *
+ * Opcional: --apps "Discord,DiscordPTB" limita quais aplicativos entram no tunel.
+ *
  * Escreve uma linha de JSON em stdout. Diagnostico vai para stderr.
  */
 
@@ -89,6 +91,17 @@ async function principal() {
     const chaveEsperada = opcao("chave-da-saida") ?? undefined;
     const alvoPreferido = opcao("medir-contra");
 
+    // Os aplicativos que o tunel aceita. Eram fixos em ["Discord"], e isso deixava quem usa o
+    // Discord PTB ou o Canary -- que o instalador suporta e injeta normalmente -- com um tunel
+    // de pe que nao casava com o proprio cliente: nada entrava nele, e o Discord seguia saindo
+    // pelo IP de casa como se o StreamFix nao existisse.
+    //
+    // Listar os tres por padrao e mais barato do que detectar: ter o PTB na lista sem ter o PTB
+    // instalado nao custa nada, e errar a deteccao custa um tunel que nao funciona.
+    const apps = (opcao("apps") ?? "Discord,DiscordPTB,DiscordCanary")
+        .split(",").map(a => a.trim()).filter(a => a.length > 0);
+    if (apps.length === 0) responde({ ok: false, erro: "--apps vazio levaria a maquina inteira" });
+
     if (!url) responde({ ok: false, erro: "falta --url" });
     if (!arquivo) responde({ ok: false, erro: "falta --arquivo" });
 
@@ -137,7 +150,7 @@ async function principal() {
         chavePublicaDoServidor: registro.dados.chavePublicaDoServidor,
         endpoint: registro.dados.endpoint,
         destinos: registro.dados.faixa,
-        apps: ["Discord"]
+        apps
     });
 
     // 0o600 desde a criacao: o arquivo nasce com a privada dentro, e nao existe instante em que
@@ -154,7 +167,8 @@ async function principal() {
         faixa: registro.dados.faixa,
         mtuDoCaminho: medida.mtu,
         mtuDoTunel: mtu,
-        medidoContra: medida.alvo
+        medidoContra: medida.alvo,
+        apps
     });
 }
 

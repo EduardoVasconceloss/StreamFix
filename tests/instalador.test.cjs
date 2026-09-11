@@ -196,7 +196,14 @@ describe("provisionamento", () => {
         await provisionar(CONVITE_BOM, ["--arquivo", arquivo]);
         const conf = readFileSync(arquivo, "utf8");
 
-        assert.match(conf, /^#@ws:AllowedApps = Discord$/m);
+        // O invariante e "tem Discord e nao esta vazio", nao a lista exata: DiscordPTB e
+        // DiscordCanary entraram depois, porque quem usa esses clientes ficava com um tunel
+        // que nao casava com o proprio Discord.
+        const linha = /^#@ws:AllowedApps = (.+)$/m.exec(conf);
+        assert.ok(linha, "o perfil saiu sem AllowedApps");
+        const listados = linha[1].split(",").map(a => a.trim()).filter(Boolean);
+        assert.ok(listados.length > 0, "lista vazia levaria a maquina inteira");
+        assert.ok(listados.includes("Discord"), `Discord fora da lista: ${linha[1]}`);
         assert.ok(conf.indexOf("[Peer]") < conf.indexOf("#@ws:AllowedApps"), "a diretiva vive no [Peer]");
         assert.match(conf, /^MTU = 1412$/m);
     });
