@@ -15,7 +15,7 @@ Diagnóstico de origem em `docs/research/regressao-encoder-inativo-2026-09-03.md
 | 0 — remover a proxy | **feita** em 11/09 |
 | 1 — coletor | **feita** em 11/09 |
 | 2 — perfil | **feita** em 11/09 |
-| 3 — controle | não iniciada |
+| 3 — controle | **feita** em 11/09 |
 | 4 — provisionamento | não iniciada |
 | 5 — porteiro | não iniciada (gancho investigado) |
 | 6 — assistir | não iniciada (gancho investigado) |
@@ -231,6 +231,44 @@ quando o consumidor existir.
 
 **Como se prova:** CLI dublado para os caminhos de erro; teste manual para o caminho real.
 Medido: a conexão leva ~793 ms e captura um Discord já aberto.
+
+### O que a fase mediu
+
+Feita em `streamFix/tunnel/controle.ts`, 25 testes em `tests/controle.test.cjs`, exercitada
+contra o CLI real (WireSock 3.4.8.1). Quatro achados, todos do tipo que só aparece rodando:
+
+**1. O `connect` registra o split tunnel aplicado, em JSON.** A linha `AllowedApps=Discord` sai
+no log do próprio `connect`. Isso **promove a teste automático** o que o plano marcava como
+verificação manual no log do serviço: `subir()` lê o que valeu e **recusa e derruba** se o
+Discord não estiver lá. É a defesa contra o pior modo de falha do projeto, agora a cada conexão
+em vez de uma vez na vida.
+
+Provado de ponta a ponta: um `.conf` gerado pela fase 2, importado no WireSock real, produziu
+`AllowedApps: [ 'Discord' ]`. A cadeia fase 2 → fase 3 está fechada.
+
+**2. O código de saída do CLI não vale nada.** `disconnect` bem-sucedido devolve **2**. `connect`
+num perfil inexistente devolve **0**. `import` de arquivo inexistente devolve **0**. Nada no
+`controle` olha para código de saída; toda leitura é da saída de texto.
+
+**3. A saída de texto é traduzida** ("Não conectado", "Conexão estabelecida"). Os sinais usados
+são o **nome do perfil** e as **linhas JSON**, que não são. Um teste escrito com a saída em
+inglês passaria enquanto a produção falha no idioma do usuário — as fixtures dos testes estão em
+português de propósito.
+
+**4. `connect ... -exit` pode não voltar nunca.** Com um handshake que não fecha, ele fica
+pendurado esperando a conexão se estabelecer. Saída fora do ar, chave revogada, UDP bloqueado:
+todos caem aí. Sem prazo, **o porteiro do Go Live congela no clique** em vez de recusar. Daí
+`tempoLimiteMs` obrigatório em toda execução, e `derrubar()` também no caminho do prazo estourado
+— quando o CLI é morto no meio, não se sabe o que ficou de pé.
+
+**5. O nome do perfil sai do nome do arquivo**, e isso não está documentado em lugar nenhum:
+`import teste.conf` cria o perfil `teste`, ignorando qualquer nome pedido. E o `import` **não
+sobrescreve** um perfil existente. Consequência para a fase 7: o instalador grava o `.conf` com o
+nome exato do perfil, e atualizar exige `delete` antes de `import`.
+
+**Pendente para a fase 5**, como a spec previa: `estado()` hoje reporta o que o CLI sabe. A
+verificação que vale — `localAddress` de `getStats().transport` — precisa do consumidor no
+renderer.
 
 ---
 
