@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.1.1...v2.2.0) (2026-09-11)
+
+
+### Features
+
+* dizer quando o .NET da maquina e que esta quebrado ([817f57f](https://github.com/EduardoVasconceloss/StreamFix/commit/817f57f1784e4dc0bcf74e7e2bcc1fe49e0edf2e))
+
 ## [2.1.1](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.1.0...v2.1.1) (2026-09-11)
 
 
