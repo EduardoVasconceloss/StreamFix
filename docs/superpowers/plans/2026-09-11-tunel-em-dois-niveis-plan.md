@@ -424,3 +424,43 @@ mas não o `Set-PluginSettings` nem o caminho de quem reinstala (itens 2 e 3).
   cobriu, como a spec previa (E8).
 - O `DiscordNative.clipboard` é um objeto congelado do Electron: para ler o `/streamfix` por CDP,
   a leitura é pela mensagem local do bot (`MESSAGE_CREATE` no canal `0`).
+
+### Depois do boot, so voltava reinstalando (12/09)
+
+**O relato:** "sempre que reiniciam o PC, tem que reinstalar o StreamFix pra voltar a funcionar o
+compartilhamento de tela".
+
+**A causa**, reproduzida aqui sem reiniciar (tunel derrubado, Discord fechado e aberto de novo):
+depois do boot nenhum tunel esta conectado -- o WireSock nao reconecta sozinho, e o CLI nao tem
+opcao para isso --, o Discord abre junto com o Windows e o gateway conecta em segundos, antes de
+o plugin por o tunel no ar. O servidor manda a Trava 1, e ela so sai com outra conexao do
+gateway. Reinstalar resolvia porque o instalador sobe o tunel **e reinicia o Discord**. No
+plugin publicado (2.2.0) nada disso tem recuperacao. O servico do WireSock ainda nao responder
+no boot piora: o plugin desistia na primeira falha.
+
+No plugin desta spec, a E6 ja se recuperava sozinha, mas pela causa errada: tomava a trava por
+"a faixa nao cobre o gateway" e prendia o completo ate o Discord fechar -- call a ~130 ms em
+todo boot.
+
+**O conserto:**
+
+- `decidirTrava` separa as causas pelo `tunelNoGateway`: um perfil nosso estava no ar quando o
+  gateway conectou? Sem tunel, a causa e tempo: recarrega uma vez com o tunel ja no ar e o nivel
+  fica como estava -- em qualquer modo, inclusive sem o perfil de controle. Com tunel, e faixa:
+  o comportamento de E6.
+- O `tunelNoGateway` e lido no `CONNECTION_OPEN`; com o cache vazio, pergunta ao WireSock na
+  hora. Se o gateway conectou antes de o plugin ligar, vale o que ja estava no ar no `start`.
+- A marca da recarga guarda a causa (`{ quando, completo }`); a sessao aberta pela recarga so
+  fica no completo se a causa foi a faixa.
+- `controle.existe` devolve `desconhecido` quando o WireSock nao responde, e o `start` repete a
+  pergunta e a troca a cada 5 s por ate 2 minutos. A conferencia da trava espera isso terminar.
+
+**Medido depois do conserto:** Discord aberto com o tunel fora do ar -> trava por tempo, uma
+recarga, sessao em dois niveis, sem trava, "o tunel estava no ar quando o Discord conectou: sim".
+Discord aberto com o tunel ja no ar -> nenhuma recarga. **Nao medido:** o servico do WireSock
+sem responder no boot (para-lo exige administrador); o caminho e o dos testes de `controle`.
+
+**Para quem esta no 2.2.0 hoje** (inferido do mecanismo, nao testado com o plugin antigo): nao
+precisa reinstalar. Fechar o Discord pela bandeja e abrir de novo basta, porque na segunda
+abertura o tunel ja esta no ar; se o WireSock ainda nao respondia no boot, pode ser preciso
+repetir uma vez.

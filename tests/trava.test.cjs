@@ -13,7 +13,7 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 
 const {
-    lerTrava, descreverTrava, decidirTrava, recargaRecente,
+    lerTrava, descreverTrava, decidirTrava, lerMarca,
     VIDEO_GUARD, VARIANTES_DA_TRAVA, VALIDADE_DA_MARCA_MS
 } = require("../streamFix/tunnel/trava.ts");
 
@@ -76,35 +76,66 @@ test("formato inesperado e ilegivel, nunca trava", () => {
     assert.match(descreverTrava(lerTrava("erro: x", {}))[0], /nao consegui ler/);
 });
 
+// Faixa: um perfil nosso estava no ar quando o gateway conectou, e a trava veio mesmo assim.
+const FAIXA = { trava: true, doisNiveis: true, tunelNoGateway: true, jaRecarregou: false };
+// Tempo: o gateway conectou antes do tunel. E o caso de todo boot (reproduzido em 12/09).
+const TEMPO = { trava: true, doisNiveis: true, tunelNoGateway: false, jaRecarregou: false };
+
 test("trava com o controle no ar: completo, uma recarga e aviso (E6)", () => {
-    const d = decidirTrava({ trava: true, doisNiveis: true, jaRecarregou: false });
+    const d = decidirTrava(FAIXA);
     assert.equal(d.forcarCompleto, true);
     assert.equal(d.recarregar, true);
     assert.match(d.aviso, /recarregando/);
 });
 
 test("trava de novo depois da recarga nao recarrega outra vez: nada de laco", () => {
-    const d = decidirTrava({ trava: true, doisNiveis: true, jaRecarregou: true });
-    assert.equal(d.forcarCompleto, true);
-    assert.equal(d.recarregar, false);
-    assert.match(d.aviso, /tunelCompletoSempre/);
+    for (const s of [{ ...FAIXA, jaRecarregou: true }, { ...TEMPO, jaRecarregou: true }]) {
+        assert.equal(decidirTrava(s).recarregar, false, JSON.stringify(s));
+    }
+    assert.match(decidirTrava({ ...FAIXA, jaRecarregou: true }).aviso, /tunelCompletoSempre/);
 });
 
-test("sem trava, ou fora do tunel em dois niveis, nao faz nada", () => {
+test("trava porque o Discord conectou antes do tunel: recarrega sem forcar o completo", () => {
+    // O relato: "sempre que reiniciam o PC, tem que reinstalar". Depois do boot nenhum tunel esta
+    // no ar, o Discord conecta antes de o plugin subir o tunel, e a trava so sai com outra
+    // conexao. Forcar o completo aqui deixaria a call a ~130 ms em todo boot, por nada.
+    const d = decidirTrava(TEMPO);
+    assert.equal(d.recarregar, true);
+    assert.equal(d.forcarCompleto, false);
+    assert.match(d.aviso, /antes de o tunel ficar pronto/);
+});
+
+test("a trava por tempo e consertada tambem sem o perfil de controle", () => {
+    // Quem atualizou o plugin e nao o instalador fica no completo -- e sofre a mesma corrida.
+    const d = decidirTrava({ ...TEMPO, doisNiveis: false });
+    assert.equal(d.recarregar, true);
+    assert.equal(d.forcarCompleto, false);
+});
+
+test("sem trava nao faz nada; com o completo no ar e a trava mesmo assim, tambem nao", () => {
     for (const s of [
-        { trava: false, doisNiveis: true, jaRecarregou: false },
-        { trava: false, doisNiveis: false, jaRecarregou: false },
-        // No completo sempre, trocar de perfil nao resolveria: nao ha para onde subir.
-        { trava: true, doisNiveis: false, jaRecarregou: false }
+        { ...FAIXA, trava: false },
+        { ...TEMPO, trava: false },
+        { ...FAIXA, trava: false, doisNiveis: false },
+        // O completo estava no ar e a trava veio: a saida foi marcada. Trocar de perfil nao resolve.
+        { ...FAIXA, doisNiveis: false }
     ]) {
         assert.deepEqual(decidirTrava(s), { forcarCompleto: false, recarregar: false, aviso: null }, JSON.stringify(s));
     }
 });
 
-test("a marca da recarga vale por pouco tempo, e so se for um numero", () => {
+test("a marca da recarga vale por pouco tempo e guarda a causa", () => {
     const agora = 1_000_000;
-    assert.equal(recargaRecente(agora - 5_000, agora), true);
-    assert.equal(recargaRecente(agora - VALIDADE_DA_MARCA_MS, agora), false, "vencida: e outra abertura do Discord");
-    assert.equal(recargaRecente(agora + 5_000, agora), false, "do futuro: relogio mexido, nao confia");
-    for (const ruim of [undefined, null, "123", {}]) assert.equal(recargaRecente(ruim, agora), false);
+    assert.deepEqual(lerMarca({ quando: agora - 5_000, completo: false }, agora), { quando: agora - 5_000, completo: false });
+    assert.deepEqual(lerMarca({ quando: agora - 5_000, completo: true }, agora), { quando: agora - 5_000, completo: true });
+    assert.equal(lerMarca({ quando: agora - VALIDADE_DA_MARCA_MS, completo: false }, agora), null, "vencida: e outra abertura do Discord");
+    assert.equal(lerMarca({ quando: agora + 5_000, completo: false }, agora), null, "do futuro: relogio mexido, nao confia");
+    for (const ruim of [undefined, null, "123", {}, { quando: "1", completo: true }, { quando: agora, completo: "sim" }]) {
+        assert.equal(lerMarca(ruim, agora), null, JSON.stringify(ruim));
+    }
+});
+
+test("a marca antiga, um numero solto, vale como recarga por faixa", () => {
+    const agora = 1_000_000;
+    assert.deepEqual(lerMarca(agora - 5_000, agora), { quando: agora - 5_000, completo: true });
 });

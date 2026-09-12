@@ -50,6 +50,6 @@ export function perfilAtivo(_e: IpcMainInvokeEvent, candidatos: string[]): Promi
     return controle.perfilAtivo(candidatos);
 }
 
-export function perfilExiste(_e: IpcMainInvokeEvent, perfil: string): Promise<boolean> {
+export function perfilExiste(_e: IpcMainInvokeEvent, perfil: string): Promise<boolean | "desconhecido"> {
     return controle.existe(perfil);
 }

@@ -45,8 +45,8 @@ export interface Controle {
     perfilAtivo(candidatos: string[]): Promise<string | null | "desconhecido">;
     /** Poe `para` no ar no lugar do que estiver. Nao faz nada se ele ja estiver. */
     trocar(para: string): Promise<Resultado & { duracaoMs: number }>;
-    /** Se o perfil esta importado. `false` tambem quando nao deu para perguntar. */
-    existe(perfil: string): Promise<boolean>;
+    /** Se o perfil esta importado. `desconhecido` quando nao deu para perguntar. */
+    existe(perfil: string): Promise<boolean | "desconhecido">;
 }
 
 export const CLI_PADRAO =
@@ -368,16 +368,19 @@ export function controleWireSock(opcoes: OpcoesControle): Controle & {
     /**
      * Se o perfil aparece na `list`, pelo nome exato.
      *
-     * Na duvida, `false`: e o que o plugin usa para saber se o perfil de controle existe, e sem
-     * ele o plugin fica no completo, que e o comportamento de antes (spec, E5). Errar para
-     * `true` o faria trocar para um perfil que nao existe a cada clique.
+     * **Nao saber e um terceiro estado**, pela mesma razao de `estado`. Logo depois do boot o
+     * servico do WireSock pode ainda nao responder, e ler isso como "o perfil nao existe" deixava
+     * o plugin no completo pela sessao inteira, sem tentar de novo. Quem chama decide: o plugin
+     * repete a pergunta por um tempo e, se continuar sem resposta, fica no completo (E5).
      */
-    async function existe(perfil: string): Promise<boolean> {
+    async function existe(perfil: string): Promise<boolean | "desconhecido"> {
+        let lista: string;
         try {
-            return contemPerfil(await rodarCurto("list"), perfil);
+            lista = await rodarCurto("list");
         } catch {
-            return false;
+            return "desconhecido";
         }
+        return lista.trim().length === 0 ? "desconhecido" : contemPerfil(lista, perfil);
     }
 
     return { subir, derrubar, estado, perfilAtivo, trocar, existe, importar };

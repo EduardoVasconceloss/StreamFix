@@ -463,7 +463,11 @@ test("existe casa o nome inteiro na list", async () => {
     assert.equal(await c.existe(CONTROLE), false);
 });
 
-test("existe com o CLI falhando e false: sem saber, o plugin fica no completo", async () => {
-    const { c } = controleDe({ list: new Error("sem servico") });
-    assert.equal(await c.existe(CONTROLE), false);
+test("existe com o CLI falhando e desconhecido, nao false: o plugin tenta de novo", async () => {
+    // Logo depois do boot, o servico do WireSock pode ainda nao responder. Ler isso como "nao
+    // existe" deixava o plugin no completo pela sessao inteira, sem tentar de novo.
+    for (const list of [new Error("Grpc.Core.RpcException DeadlineExceeded"), "", "\r\n"]) {
+        const { c } = controleDe({ list });
+        assert.equal(await c.existe(CONTROLE), "desconhecido", JSON.stringify(String(list)));
+    }
 });

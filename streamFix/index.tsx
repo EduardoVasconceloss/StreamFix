@@ -22,7 +22,7 @@ import { Estado, Veredito } from "./tunnel/monitor";
 import { observar } from "./tunnel/observador";
 import { perfilDeControle } from "./tunnel/perfil";
 import { aviso, conferirNascimento, decidirClique, donoDoStream, hostDoEndpoint } from "./tunnel/porteiro";
-import { decidirTrava, descreverTrava, ESPERA_DEPOIS_DO_GATEWAY_MS, LeituraTrava, lerTrava, recargaRecente, VIDEO_GUARD } from "./tunnel/trava";
+import { decidirTrava, descreverTrava, ESPERA_DEPOIS_DO_GATEWAY_MS, LeituraTrava, lerMarca, lerTrava, Marca, VIDEO_GUARD } from "./tunnel/trava";
 import { AVISO_VOZ_FORA, decidirVoz, EstadoVoz, EventoVoz, PRAZO_VOZ_MS, VOZ_INICIAL } from "./tunnel/voz";
 
 interface RegionStore {
@@ -87,6 +87,31 @@ let recarregouPorTrava = false;
 
 /** A espera entre o `CONNECTION_OPEN` e a leitura da atribuicao. */
 let esperaDaTrava: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Um perfil nosso estava no ar quando o gateway conectou. `null` enquanto nao se sabe.
+ *
+ * Lido no `CONNECTION_OPEN`; se o gateway conectou antes de o plugin ligar, vale o que ja estava
+ * no ar no `start`. E o que separa a trava por tempo da trava por faixa (ver `decidirTrava`).
+ */
+let tunelNoGateway: boolean | null = null;
+
+/** Uma recarga pela trava ja foi pedida. Segura uma segunda conferencia que chegue junto. */
+let recarregando = false;
+
+/** Resolve quando o `prepararNiveis` termina. A conferencia da trava espera por ele. */
+let preparado: Promise<void> = Promise.resolve();
+let terminarPreparo: () => void = () => undefined;
+
+/**
+ * Quantas vezes, e com que intervalo, perguntar ao WireSock no `start` enquanto ele nao responde.
+ *
+ * Depois do boot, o Discord abre sozinho junto com o Windows, e o servico do WireSock pode
+ * ainda nao responder. Desistir na primeira falha deixava a pessoa sem tunel ate reabrir o
+ * Discord -- e o servidor mandava a Trava 1. Dois minutos cobrem um boot lento.
+ */
+const TENTATIVAS_NO_INICIO = 24;
+const INTERVALO_DAS_TENTATIVAS_MS = 5_000;
 
 /**
  * A marca de "recarreguei por causa da trava", no DataStore do Vencord. O Discord apaga
@@ -365,38 +390,66 @@ function lerTravaAgora(): LeituraTrava | null {
     );
 }
 
+/** Se o perfil e um dos nossos. `desconhecido` e `null` nao sao. */
+function ehNosso(perfil: string | null | "desconhecido") {
+    const { completo, controle } = perfis();
+    return perfil === completo || perfil === controle;
+}
+
 /**
  * Confere a Trava 1 depois de uma conexao do gateway (E6, fase 7).
  *
- * Com o controle no ar, a trava vir significa que a faixa de controle nao cobriu o gateway
- * desta pessoa. O plugin passa para o completo ate o Discord fechar e recarrega uma vez, para o
- * gateway conectar de novo -- e so um `READY` novo tira a trava.
+ * A trava so sai com um `READY` novo, que so vem de outra conexao do gateway: por isso a
+ * recarga. **A causa decide o resto** (ver `decidirTrava`): se o Discord conectou antes de o
+ * tunel ficar pronto -- todo boot --, basta recarregar com o tunel ja no ar; se o controle
+ * estava no ar e a trava veio mesmo assim, a faixa nao cobriu o gateway desta pessoa, e so o
+ * completo resolve.
+ *
+ * Espera o `prepararNiveis`: antes dele, o plugin ainda nao sabe se ha perfil de controle nem
+ * se o WireSock responde, e decidiria as cegas.
  */
 async function conferirTrava() {
     try {
-        if (!ligado) return;
+        await preparado;
+        if (!ligado || recarregando) return;
         const leitura = lerTravaAgora();
         if (leitura === null) return;
 
-        const d = decidirTrava({ trava: leitura.trava, doisNiveis: doisNiveis(), jaRecarregou: recarregouPorTrava });
-        if (leitura.trava) anotar(`a trava veio (variante ${leitura.servidor})${d.forcarCompleto ? " com o controle no ar" : ""}`);
+        const noGateway = tunelNoGateway === true;
+        const d = decidirTrava({
+            trava: leitura.trava,
+            doisNiveis: doisNiveis(),
+            tunelNoGateway: noGateway,
+            jaRecarregou: recarregouPorTrava
+        });
+        if (leitura.trava) {
+            anotar(`a trava veio (variante ${leitura.servidor}), ${noGateway ? "com o tunel no ar" : "antes de o tunel ficar pronto"}`);
+        }
         if (d.aviso !== null) showToast(d.aviso, Toasts.Type.FAILURE);
-        if (!d.forcarCompleto) return;
+        if (d.forcarCompleto) travaComControle = true;
+        if (!d.recarregar) {
+            if (d.forcarCompleto) void aplicarNivel();
+            return;
+        }
 
-        travaComControle = true;
+        // Sincrono ate aqui: uma segunda conferencia (a do `start` e a do CONNECTION_OPEN podem
+        // coincidir) para no `recarregando` la em cima.
+        recarregando = true;
         const aplicado = await aplicarNivel();
-        if (!d.recarregar) return;
-        if (!aplicado.ok || aplicado.nivel !== "completo") {
-            // Recarregar sem o completo no ar traria a trava de volta, e gastaria a unica recarga.
-            anotar(`nao recarreguei: o completo nao subiu (${aplicado.motivo})`);
+        if (!aplicado.ok || (d.forcarCompleto && aplicado.nivel !== "completo")) {
+            // Recarregar sem o tunel certo no ar traria a trava de volta, e gastaria a unica recarga.
+            recarregando = false;
+            anotar(`nao recarreguei: o tunel nao subiu (${aplicado.motivo})`);
             return;
         }
 
         recarregouPorTrava = true;
-        await DataStore.set(MARCA_DA_RECARGA, Date.now());
+        const marca: Marca = { quando: Date.now(), completo: d.forcarCompleto };
+        await DataStore.set(MARCA_DA_RECARGA, marca);
         anotar("recarregando o Discord pela trava");
         location.reload();
     } catch (error) {
+        recarregando = false;
         anotar(`conferencia da trava falhou: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
@@ -679,6 +732,7 @@ async function buildReport() {
     // Lida na hora, e nao da ultima conferencia: o `/streamfix` tem de dizer o que vale agora.
     const trava = lerTravaAgora();
     lines.push(...(trava === null ? ["sem usuario logado"] : descreverTrava(trava)));
+    lines.push(`o tunel estava no ar quando o Discord conectou: ${tunelNoGateway === null ? "nao sei" : tunelNoGateway ? "sim" : "nao"}`);
     if (travaComControle) {
         lines.push(`a trava veio com o tunel leve no ar: completo ate o Discord fechar${recarregouPorTrava ? " (ja recarreguei uma vez)" : ""}`);
     }
@@ -969,6 +1023,20 @@ export default definePlugin({
         // Cada conexao do gateway traz uma avaliacao nova da Trava 1 no `READY` (E6). A espera e
         // para a store processar o mesmo evento antes da leitura.
         CONNECTION_OPEN() {
+            // O que estava no ar no instante em que o gateway conectou. Com o cache vazio -- logo
+            // depois de abrir, antes da primeira leitura, ou no meio de uma troca --, pergunta ao
+            // WireSock. Tomar "nao sei" por "sem tunel" diagnosticava errado a sessao aberta
+            // pela recarga, que conecta com o tunel ja de pe (visto em 12/09). No buraco de uma
+            // troca o `status` diz "nao conectado", que e verdade: ali o gateway sai pelo Brasil.
+            if (perfilNoAr !== "desconhecido") {
+                tunelNoGateway = ehNosso(perfilNoAr);
+            } else {
+                tunelNoGateway = null;
+                const { completo, controle } = perfis();
+                Native.perfilAtivo([completo, controle])
+                    .then(p => { if (tunelNoGateway === null) tunelNoGateway = ehNosso(p); })
+                    .catch(() => { if (tunelNoGateway === null) tunelNoGateway = false; });
+            }
             if (esperaDaTrava !== null) clearTimeout(esperaDaTrava);
             esperaDaTrava = setTimeout(() => {
                 esperaDaTrava = null;
@@ -1014,6 +1082,7 @@ export default definePlugin({
     start() {
         forceRegion();
         ligado = true;
+        preparado = new Promise(r => { terminarPreparo = r; });
         void this.prepararNiveis();
     },
 
@@ -1021,34 +1090,75 @@ export default definePlugin({
      * Descobre se o perfil de controle existe e poe no ar o nivel certo.
      *
      * Sem o perfil de controle (quem atualizou o plugin e nao rodou o instalador), o nivel e o
-     * completo, que e o comportamento de antes (E5). Enquanto a pergunta nao volta, tambem.
+     * completo, que e o comportamento de antes (E5).
+     *
+     * **Repete enquanto o WireSock nao responde**, por ate dois minutos: depois do boot o
+     * Discord abre junto com o Windows, e o servico pode ainda nao estar pronto. Desistir na
+     * primeira falha era o "depois de reiniciar o PC, so volta reinstalando".
      */
     async prepararNiveis() {
+        const espera = () => new Promise(r => setTimeout(r, INTERVALO_DAS_TENTATIVAS_MS));
         try {
-            temControle = await Native.perfilExiste(perfis().controle);
-        } catch {
-            temControle = false;
-        }
-        anotar(temControle ? "perfil de controle encontrado" : "sem perfil de controle: completo sempre");
+            const { completo, controle } = perfis();
 
-        // Esta abertura veio de uma recarga pela trava: completo ate o Discord fechar, e nada de
-        // recarregar de novo. A marca e apagada na leitura, entao a proxima abertura tenta o
-        // tunel leve outra vez.
-        try {
-            const marca = await DataStore.get(MARCA_DA_RECARGA);
-            if (marca !== undefined) await DataStore.del(MARCA_DA_RECARGA);
-            if (recargaRecente(marca, Date.now())) {
-                travaComControle = true;
-                recarregouPorTrava = true;
-                anotar("aberto por uma recarga pela trava: completo ate o Discord fechar");
+            // O que ja estava no ar quando o plugin ligou. Se o gateway conectou antes disso, e o
+            // que ele pegou; se ainda vai conectar, o CONNECTION_OPEN escreve por cima.
+            try {
+                perfilNoAr = await Native.perfilAtivo([completo, controle]);
+            } catch {
+                perfilNoAr = "desconhecido";
             }
-        } catch {
-            // Sem saber se esta abertura veio de uma recarga, nao recarrega nesta: sem a marca,
-            // uma recarga poderia puxar outra, e laco de recarga e o pior modo de falha aqui.
-            recarregouPorTrava = true;
-        }
+            if (tunelNoGateway === null) tunelNoGateway = ehNosso(perfilNoAr);
 
-        await aplicarNivel();
+            // Esta abertura veio de uma recarga pela trava: nada de recarregar de novo. Se a causa
+            // foi a faixa, completo ate o Discord fechar; se foi tempo, o nivel segue normal. A
+            // marca e apagada na leitura, entao a proxima abertura comeca do zero.
+            try {
+                const lida = await DataStore.get(MARCA_DA_RECARGA);
+                if (lida !== undefined) await DataStore.del(MARCA_DA_RECARGA);
+                const marca = lerMarca(lida, Date.now());
+                if (marca !== null) {
+                    recarregouPorTrava = true;
+                    travaComControle = marca.completo;
+                    anotar(marca.completo
+                        ? "aberto por uma recarga pela trava: completo ate o Discord fechar"
+                        : "aberto por uma recarga pela trava: o Discord tinha conectado antes do tunel");
+                }
+            } catch {
+                // Sem saber se esta abertura veio de uma recarga, nao recarrega nesta: sem a marca,
+                // uma recarga poderia puxar outra, e laco de recarga e o pior modo de falha aqui.
+                recarregouPorTrava = true;
+            }
+
+            for (let i = 1; ligado; i++) {
+                let existe: boolean | "desconhecido";
+                try {
+                    existe = await Native.perfilExiste(controle);
+                } catch {
+                    existe = "desconhecido";
+                }
+                if (existe !== "desconhecido") {
+                    temControle = existe;
+                    anotar(existe ? "perfil de controle encontrado" : "sem perfil de controle: completo sempre");
+                    break;
+                }
+                if (i >= TENTATIVAS_NO_INICIO) {
+                    temControle = false;
+                    anotar("o WireSock nao respondeu: completo sempre nesta sessao");
+                    break;
+                }
+                if (i === 1) anotar("o WireSock ainda nao responde; tentando de novo a cada 5 s");
+                await espera();
+            }
+
+            for (let i = 1; ligado; i++) {
+                const aplicado = await aplicarNivel();
+                if (aplicado.ok || i >= TENTATIVAS_NO_INICIO) break;
+                await espera();
+            }
+        } finally {
+            terminarPreparo();
+        }
 
         // O gateway pode ter conectado antes de o plugin ligar, e ai o CONNECTION_OPEN ja passou.
         void conferirTrava();

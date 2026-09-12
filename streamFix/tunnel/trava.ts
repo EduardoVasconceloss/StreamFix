@@ -88,6 +88,16 @@ export interface SituacaoDaTrava {
     trava: boolean;
     /** O tunel em dois niveis estava valendo, ou seja, o normal era o controle. */
     doisNiveis: boolean;
+    /**
+     * Um perfil nosso estava no ar quando o gateway conectou.
+     *
+     * E o que separa as duas causas da trava. Sem tunel no ar, a causa e **tempo**: o Discord
+     * conectou antes de o tunel ficar pronto. E o caso de todo boot -- depois de reiniciar o PC
+     * nenhum tunel esta conectado, o Discord abre sozinho e conecta em segundos, e o tunel leva
+     * ~1,5 s para subir depois de o plugin ligar. Reproduzido na fase 8, em 12/09. Com tunel no
+     * ar, a causa e **faixa**: o controle nao levou o gateway desta pessoa (E6).
+     */
+    tunelNoGateway: boolean;
     /** Ja houve uma recarga por causa da trava nesta abertura do Discord. */
     jaRecarregou: boolean;
 }
@@ -105,16 +115,38 @@ const NADA: DecisaoDaTrava = { forcarCompleto: false, recarregar: false, aviso: 
 /**
  * O que fazer com a atribuicao lida.
  *
- * So age no tunel em dois niveis. No completo sempre, a trava vir significa outra coisa -- o
- * tunel estava fora quando o gateway conectou, ou a propria saida foi marcada --, e trocar de
- * perfil nao resolveria nada; o porteiro e o `/streamfix` cuidam disso.
- *
  * **Uma recarga so.** O gateway ja conectou com a trava; ela so sai com um `READY` novo, que so
- * vem de outra conexao. A recarga e o jeito limpo de ter uma. Se mesmo assim a trava vier com o
- * controle, nao recarrega de novo: laco de recarga seria pior do que o botao cinza.
+ * vem de outra conexao. A recarga e o jeito limpo de ter uma. Se mesmo assim a trava vier de
+ * novo, nao recarrega outra vez: laco de recarga seria pior do que o botao cinza.
+ *
+ * **A causa decide o resto.** Por tempo, basta recarregar com o tunel ja no ar, e o nivel fica
+ * como estava -- forcar o completo aqui deixaria a call a ~130 ms em todo boot, por nada. Isso
+ * vale em qualquer modo, inclusive para quem nao tem o perfil de controle: e o conserto de
+ * "depois de reiniciar o PC, so volta reinstalando". Por faixa, so o completo resolve, e so no
+ * tunel em dois niveis; com o completo no ar e a trava vindo mesmo assim, a propria saida foi
+ * marcada, e trocar de perfil nao adianta.
  */
 export function decidirTrava(s: SituacaoDaTrava): DecisaoDaTrava {
-    if (!s.trava || !s.doisNiveis) return NADA;
+    if (!s.trava) return NADA;
+
+    if (!s.tunelNoGateway) {
+        if (s.jaRecarregou) {
+            return {
+                forcarCompleto: s.doisNiveis,
+                recarregar: false,
+                aviso: "StreamFix: o Discord continua mandando a trava do Brasil mesmo depois de recarregar."
+                    + " Feche o Discord pela bandeja e abra de novo."
+            };
+        }
+        return {
+            forcarCompleto: false,
+            recarregar: true,
+            aviso: "StreamFix: o Discord conectou antes de o tunel ficar pronto, e a trava do Brasil veio."
+                + " Recarregando o Discord uma vez."
+        };
+    }
+
+    if (!s.doisNiveis) return NADA;
 
     if (s.jaRecarregou) {
         return {
@@ -133,7 +165,24 @@ export function decidirTrava(s: SituacaoDaTrava): DecisaoDaTrava {
     };
 }
 
-/** Se a marca da ultima recarga ainda vale. Qualquer coisa que nao seja um numero recente, nao. */
-export function recargaRecente(marca: unknown, agora: number): boolean {
-    return typeof marca === "number" && marca <= agora && agora - marca < VALIDADE_DA_MARCA_MS;
+/** O que a marca da recarga guarda: quando, e se a sessao seguinte tem de ficar no completo. */
+export interface Marca {
+    quando: number;
+    completo: boolean;
+}
+
+/**
+ * A marca da ultima recarga, se ainda vale. `null` para vencida, do futuro ou ilegivel.
+ *
+ * Um numero solto e a marca da primeira versao, que so recarregava por faixa: vale como
+ * `completo`.
+ */
+export function lerMarca(marca: unknown, agora: number): Marca | null {
+    const m: Marca | null = typeof marca === "number" ? { quando: marca, completo: true }
+        : marca !== null && typeof marca === "object"
+            && typeof (marca as Marca).quando === "number" && typeof (marca as Marca).completo === "boolean"
+            ? { quando: (marca as Marca).quando, completo: (marca as Marca).completo }
+            : null;
+    if (m === null || m.quando > agora || agora - m.quando >= VALIDADE_DA_MARCA_MS) return null;
+    return m;
 }
