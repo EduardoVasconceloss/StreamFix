@@ -41,6 +41,12 @@ export interface Controle {
     subir(perfil: string): Promise<Resultado>;
     derrubar(): Promise<void>;
     estado(perfil: string): Promise<EstadoTunel>;
+    /** Qual dos candidatos esta no ar; `null` para nenhum deles. */
+    perfilAtivo(candidatos: string[]): Promise<string | null | "desconhecido">;
+    /** Poe `para` no ar no lugar do que estiver. Nao faz nada se ele ja estiver. */
+    trocar(para: string): Promise<Resultado & { duracaoMs: number }>;
+    /** Se o perfil esta importado. `false` tambem quando nao deu para perguntar. */
+    existe(perfil: string): Promise<boolean>;
 }
 
 export const CLI_PADRAO =
@@ -111,6 +117,20 @@ export function saidaDoStatus(texto: string): string {
 }
 
 /**
+ * O nome do perfil aparece no texto como palavra inteira?
+ *
+ * Nao basta `includes`: `streamfix-santiago` esta contido em `streamfix-santiago-controle`, e
+ * com o controle de pe o plugin acharia que o completo estava no ar. Ate o tunel em dois niveis
+ * isso nao importava, porque so existia um perfil. Colado ao nome, antes ou depois, nao pode
+ * haver letra, digito, `-` nem `_`.
+ */
+export function contemPerfil(texto: string, perfil: string): boolean {
+    if (!perfil) return false;
+    const nome = perfil.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?<![\\p{L}\\p{N}_-])${nome}(?![\\p{L}\\p{N}_-])`, "u").test(texto ?? "");
+}
+
+/**
  * Decide o estado a partir da saida do `status`.
  *
  * O sinal e o **nome do perfil**. Conectado, o CLI o repete na resposta; desconectado, responde
@@ -123,7 +143,19 @@ export function saidaDoStatus(texto: string): string {
 export function estadoDoStatus(texto: string, perfil: string): EstadoTunel {
     const t = (texto ?? "").trim();
     if (t.length === 0) return "desconhecido";
-    return t.includes(perfil) ? "conectado" : "fora";
+    return contemPerfil(t, perfil) ? "conectado" : "fora";
+}
+
+/**
+ * Qual dos perfis candidatos esta no ar, pela mesma leitura do `status`.
+ *
+ * `null` e "nenhum deles" (outro perfil, ou nenhum). Saida vazia e `desconhecido`, pela mesma
+ * razao de `estadoDoStatus`.
+ */
+export function perfilAtivoDoStatus(texto: string, candidatos: string[]): string | null | "desconhecido" {
+    const t = (texto ?? "").trim();
+    if (t.length === 0) return "desconhecido";
+    return candidatos.find(p => contemPerfil(t, p)) ?? null;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -138,6 +170,8 @@ export interface OpcoesControle {
     /** Quantas vezes reler o `status` esperando o endereco externo aparecer. */
     tentativasDeSaida?: number;
     dormir?: (ms: number) => Promise<void>;
+    /** Relogio para medir a troca. Injetado nos testes. */
+    agora?: () => number;
 }
 
 const espera = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
@@ -149,6 +183,7 @@ export function controleWireSock(opcoes: OpcoesControle): Controle & {
     const apps = opcoes.apps ?? ["Discord"];
     const tentativas = opcoes.tentativasDeSaida ?? 4;
     const dormir = opcoes.dormir ?? espera;
+    const agora = opcoes.agora ?? Date.now;
     const rodar = (prazo: number, ...args: string[]) =>
         opcoes.executar(cli, args, { tempoLimiteMs: prazo });
     const rodarCurto = (...args: string[]) => rodar(PRAZO_CURTO_MS, ...args);
@@ -188,7 +223,9 @@ export function controleWireSock(opcoes: OpcoesControle): Controle & {
         try {
             await rodarCurto("import", caminho);
             const lista = await rodarCurto("list");
-            if (!lista.includes(perfil)) {
+            // Nome exato: com `streamfix-santiago-controle` na lista, um `includes` daria o
+            // `streamfix-santiago` por importado mesmo que o import dele tivesse falhado.
+            if (!contemPerfil(lista, perfil)) {
                 return { ok: false, motivo: `o perfil ${perfil} nao aparece na lista apos importar` };
             }
             return { ok: true, saida: "" };
@@ -208,7 +245,18 @@ export function controleWireSock(opcoes: OpcoesControle): Controle & {
      * Recusar significa **derrubar**. Um tunel que subiu errado nao pode ficar de pe enquanto o
      * usuario le a mensagem de erro.
      */
-    async function subir(perfil: string): Promise<Resultado> {
+    function subir(perfil: string): Promise<Resultado> {
+        return conectar(perfil, true);
+    }
+
+    /**
+     * @param comSaida esperar o `status` mostrar o endereco externo. O `trocar` nao espera: com
+     *   o controle no ar esse endereco e o de casa, ninguem o usa, e esperar por ele custava de
+     *   1 a 1,5 s em cada troca -- medido na fase 8, em 12/09: cada `status` leva ~220 ms, e o
+     *   endereco so aparece segundos depois do `connect`. No clique do Go Live, isso e espera.
+     */
+    async function conectar(perfil: string, comSaida: boolean): Promise<Resultado> {
+        const saidaFinal = async () => comSaida ? await lerSaida() : "";
         let log: string;
         try {
             log = await rodar(PRAZO_CONEXAO_MS, "connect", perfil, "-log-level", "info", "-exit");
@@ -240,7 +288,7 @@ export function controleWireSock(opcoes: OpcoesControle): Controle & {
                 // o tunel e que tinha de conferir; o instalador confere. Nao ha comando no CLI
                 // que mostre os aplicativos de uma conexao ja ativa -- so o `connect` os
                 // reporta. Quem quiser a prova de fora roda o Verifica-Tunel.ps1.
-                return { ok: true, saida: await lerSaida() };
+                return { ok: true, saida: await saidaFinal() };
             }
             return { ok: false, motivo: `o WireSock nao chegou a conectar no perfil ${perfil}` };
         }
@@ -268,7 +316,7 @@ export function controleWireSock(opcoes: OpcoesControle): Controle & {
             return { ok: false, motivo: `o WireSock nao ficou conectado no perfil ${perfil}` };
         }
 
-        return { ok: true, saida: await lerSaida() };
+        return { ok: true, saida: await saidaFinal() };
     }
 
     /**
@@ -291,5 +339,46 @@ export function controleWireSock(opcoes: OpcoesControle): Controle & {
         return saida;
     }
 
-    return { subir, derrubar, estado, importar };
+    async function perfilAtivo(candidatos: string[]): Promise<string | null | "desconhecido"> {
+        try {
+            return perfilAtivoDoStatus(await rodarCurto("status"), candidatos);
+        } catch {
+            return "desconhecido";
+        }
+    }
+
+    /**
+     * Troca o perfil no ar, com a conferencia inteira do `subir`.
+     *
+     * O `disconnect` antes nao e opcional. Medido em 11/09: `connect` com outro perfil de pe e
+     * recusado **sem log**, e o `subir` leria isso como "perfil inexistente". Os dois perfis usam
+     * o mesmo endereco de tunel e a mesma saida, entao o gateway do Discord sobrevive ao buraco
+     * entre os dois comandos (pesquisa, 12h). A troca inteira leva ~1,25 s (12i).
+     */
+    async function trocar(para: string): Promise<Resultado & { duracaoMs: number }> {
+        const inicio = agora();
+        if (await estado(para) === "conectado") {
+            return { ok: true, saida: "", duracaoMs: agora() - inicio };
+        }
+        await derrubar();
+        const r = await conectar(para, false);
+        return { ...r, duracaoMs: agora() - inicio };
+    }
+
+    /**
+     * Se o perfil aparece na `list`, pelo nome exato.
+     *
+     * Na duvida, `false`: e o que o plugin usa para saber se o perfil de controle existe, e sem
+     * ele o plugin fica no completo, que e o comportamento de antes (spec, E5). Errar para
+     * `true` o faria trocar para um perfil que nao existe a cada clique.
+     */
+    async function existe(perfil: string): Promise<boolean> {
+        try {
+            return contemPerfil(await rodarCurto("list"), perfil);
+        } catch {
+            return false;
+        }
+    }
+
+    return { subir, derrubar, estado, perfilAtivo, trocar, existe, importar };
 }

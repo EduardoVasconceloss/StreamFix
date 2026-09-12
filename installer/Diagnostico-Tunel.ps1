@@ -87,6 +87,17 @@ function Test-DotNetParaWireSock($cli) {
     return $null
 }
 
+# O perfil aparece no texto como nome inteiro? `streamfix-santiago` esta contido em
+# `streamfix-santiago-controle`. Mesma regra do instalador (Test-ProfileName).
+function Tem-Perfil([string] $texto, [string] $perfil) {
+    if (-not $perfil) { return $false }
+    return $texto -match ('(?<![\p{L}\p{N}_-])' + [regex]::Escape($perfil) + '(?![\p{L}\p{N}_-])')
+}
+
+# O que o perfil de controle carrega. Espelho de FAIXA_CONTROLE (streamFix/tunnel/perfil.ts).
+$ControlRange = '162.159.128.0/17, 1.1.1.1/32'
+$Controle = "$Profile-controle"
+
 function Achar-Cli {
     foreach ($c in @(
         (Join-Path $env:ProgramFiles 'WireSock Secure Connect\command-line\wiresock-connect-cli.exe'),
@@ -187,9 +198,21 @@ if ($problemaDotNet) {
 }
 
 $lista = (& $cli list 2>&1 | Out-String)
-Linha 'perfil existe' ($lista -match [regex]::Escape($Profile))
+Linha 'perfil completo' "$Profile existe: $(Tem-Perfil $lista $Profile)"
+Linha 'perfil de controle' "$Controle existe: $(Tem-Perfil $lista $Controle)"
 $status = (& $cli status 2>&1 | Out-String)
 foreach ($l in ($status -split "`r?`n")) { if ($l.Trim()) { Nota (Limpar $l.Trim()) } }
+
+# O perfil que se confere abaixo e o que esta no ar. Sem nenhum dos dois, o completo.
+$alvo = $Profile
+$rotaEsperada = '0.0.0.0/0'
+if (Tem-Perfil $status $Controle) {
+    $alvo = $Controle
+    $rotaEsperada = $ControlRange
+    Nota "No ar: $Controle (so o controle). O endereco externo acima e o de casa, e isso e normal."
+} elseif (Tem-Perfil $status $Profile) {
+    Nota "No ar: $Profile (completo)."
+}
 
 # ------------------------------------------------------------------ 4. o que entra no tunel
 Titulo 'o que o WireSock aplicou'
@@ -204,7 +227,7 @@ if ($SemReconectar) {
     try {
         & $cli disconnect 2>&1 | Out-Null
         Start-Sleep -Milliseconds 500
-        $p = Start-Process -FilePath $cli -ArgumentList 'connect', $Profile, '-log-level', 'info', '-exit' `
+        $p = Start-Process -FilePath $cli -ArgumentList 'connect', $alvo, '-log-level', 'info', '-exit' `
             -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
         if (-not $p.WaitForExit(20000)) { try { $p.Kill() } catch { } ; Ruim 'O connect ficou pendurado.' }
         foreach ($f in @($out, $err)) {
@@ -229,14 +252,17 @@ if ($SemReconectar) {
         $rota = $null
         if ($log -match 'AllowedIPs=([^"\r\n]+)') { $rota = $Matches[1].Trim() }
 
+        # O log escreve a rota sem espaco depois da virgula; o perfil, com. Medido em 12/09.
         if (-not $rota) {
             Ruim 'O WireSock nao declarou AllowedIPs.'
-        } elseif ($rota -eq '0.0.0.0/0') {
-            Bom 'O tunel carrega rota padrao -- os destinos do Discord entram nele.'
-        } else {
-            Ruim "O tunel so carrega $rota, e nenhum servidor do Discord esta nessa faixa."
+        } elseif (($rota -replace '\s', '') -ne ($rotaEsperada -replace '\s', '')) {
+            Ruim "O perfil $alvo carrega $rota, e deveria carregar $rotaEsperada."
             Nota 'E por isso que ele conecta e nada funciona. Rode o instalador de novo:'
             Nota 'ele conserta o perfil sem gerar chave nova nem gastar convite.'
+        } elseif ($rotaEsperada -eq '0.0.0.0/0') {
+            Bom 'O tunel carrega rota padrao -- os destinos do Discord entram nele.'
+        } else {
+            Bom 'O tunel carrega a faixa de controle -- o gateway entra nele, a midia sai direta.'
         }
 
         if ($log -match 'AllowedApps[^\r\n]*Discord') {
@@ -252,7 +278,9 @@ if ($SemReconectar) {
 Titulo 'por onde o trafego sai'
 
 try {
-    $trace = Invoke-RestMethod -Uri 'https://cloudflare.com/cdn-cgi/trace' -UseBasicParsing -TimeoutSec 20
+    # 1.1.1.1 esta dentro das duas rotas do tunel, entao a medida vale nos dois perfis. Ver o
+    # comentario do TraceUrl no Verifica-Tunel.ps1.
+    $trace = Invoke-RestMethod -Uri 'https://1.1.1.1/cdn-cgi/trace' -UseBasicParsing -TimeoutSec 20
     $meu = ($trace -split "`n" | Where-Object { $_ -like 'ip=*' }) -replace '^ip=', ''
     $pais = ($trace -split "`n" | Where-Object { $_ -like 'loc=*' }) -replace '^loc=', ''
     Linha 'este PowerShell' "$meu ($pais)"

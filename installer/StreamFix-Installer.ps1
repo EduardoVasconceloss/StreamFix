@@ -88,11 +88,14 @@ $PluginFiles = @(
     'streamFix/native.ts',
     'streamFix/tunnel/coletor.ts',
     'streamFix/tunnel/controle.ts',
+    'streamFix/tunnel/emprestimos.ts',
     'streamFix/tunnel/entrada.ts',
     'streamFix/tunnel/monitor.ts',
     'streamFix/tunnel/observador.ts',
     'streamFix/tunnel/perfil.ts',
-    'streamFix/tunnel/porteiro.ts'
+    'streamFix/tunnel/porteiro.ts',
+    'streamFix/tunnel/trava.ts',
+    'streamFix/tunnel/voz.ts'
 )
 $PluginDirName = 'streamFix'
 $LegacyPluginDirName = 'goLiveBypass'
@@ -825,7 +828,8 @@ function Set-PluginSettings($root, $tunnel) {
 
     # `proxy` e `excludedCountries` sairam com a proxy de gateway (fase 0): escrever aqui um
     # campo que o plugin nao le mais so deixaria lixo no settings.json de quem atualiza.
-    foreach ($dead in @('proxy', 'excludedCountries')) {
+    # `tunelPermanente` saiu com o tunel em dois niveis, que substituiu a D9.
+    foreach ($dead in @('proxy', 'excludedCountries', 'tunelPermanente')) {
         if ($plugin.PSObject.Properties[$dead]) { $plugin.PSObject.Properties.Remove($dead) }
     }
 
@@ -837,10 +841,10 @@ function Set-PluginSettings($root, $tunnel) {
     # porteiro confere o que o Discord reporta, e um valor chutado recusaria transmissao boa.
     $plugin | Add-Member -NotePropertyName enderecoDaSaida -NotePropertyValue $tunnel.endpoint -Force
 
-    # Ligado por padrao (D9). Quem so assiste desliga nas configuracoes e passa a subir o tunel
-    # so na entrada de cada transmissao.
-    if (-not $plugin.PSObject.Properties['tunelPermanente']) {
-        $plugin | Add-Member -NotePropertyName tunelPermanente -NotePropertyValue $true -Force
+    # Desligado por padrao: o normal e o tunel em dois niveis. So escreve quando falta, para nao
+    # desfazer a escolha de quem ligou o completo nas configuracoes e reinstalou.
+    if (-not $plugin.PSObject.Properties['tunelCompletoSempre']) {
+        $plugin | Add-Member -NotePropertyName tunelCompletoSempre -NotePropertyValue $false -Force
     }
 
     $settings.plugins | Add-Member -NotePropertyName StreamFix -NotePropertyValue $plugin -Force
@@ -991,6 +995,33 @@ function Remove-TorDaemon {
 
 $WireSockWingetId = 'NTKERNEL.WireSockVPNClient'
 $DefaultTunnelProfile = 'streamfix-santiago'
+
+# Tunel em dois niveis (docs/superpowers/specs/2026-09-11-tunel-em-dois-niveis-design.md). Ao
+# lado do perfil completo, que leva todo o Discord, existe um de controle: mesma chave, mesmo
+# peer, e so a faixa do gateway e da API no AllowedIPs. Ele e o estado normal; o plugin empresta
+# o completo por segundos quando uma conexao de midia nasce.
+#
+# Espelhos de FAIXA_CONTROLE e perfilDeControle, em streamFix/tunnel/perfil.ts. O teste de
+# drift garante que os dois lados dizem a mesma coisa.
+$ControlRange = '162.159.128.0/17, 1.1.1.1/32'
+function Get-ControlProfileName($profile) { return "$profile-controle" }
+
+# O perfil aparece no texto como nome inteiro?
+#
+# `-match [regex]::Escape($profile)` nao serve mais: `streamfix-santiago` esta contido em
+# `streamfix-santiago-controle`, e com o controle de pe o instalador acharia que o completo
+# estava conectado. Colado ao nome, antes ou depois, nao pode haver letra, digito, `-` nem `_`.
+# Mesma regra de contemPerfil, em streamFix/tunnel/controle.ts.
+function Test-ProfileName([string] $texto, [string] $profile) {
+    if (-not $profile) { return $false }
+    return $texto -match ('(?<![\p{L}\p{N}_-])' + [regex]::Escape($profile) + '(?![\p{L}\p{N}_-])')
+}
+
+# Duas rotas sao a mesma? O log do connect escreve `162.159.128.0/17,1.1.1.1/32`, sem espaco,
+# e o perfil escreve com espaco. Medido em 12/09.
+function Test-SameRoute([string] $a, [string] $b) {
+    return (($a -replace '\s', '') -eq ($b -replace '\s', ''))
+}
 
 # O fecho transitivo do provisionador: ele e os modulos que ele importa. Precisam ser gravados
 # com o mesmo caminho relativo, senao os imports nao resolvem.
@@ -1166,7 +1197,7 @@ function Get-WireSock {
 # Endpoint sai daqui.
 function Get-ExistingTunnel($cli, $profile) {
     $existing = (Invoke-WireSock $cli @('list')).texto
-    if ($existing -notmatch [regex]::Escape($profile)) { return $null }
+    if (-not (Test-ProfileName $existing $profile)) { return $null }
 
     $dir = Join-Path $env:TEMP "streamfix-lt-$([guid]::NewGuid().ToString('N').Substring(0,8))"
     $file = Join-Path $dir 'perfil.conf'
@@ -1285,8 +1316,12 @@ function Invoke-Provisioner($provisionerDir, $invite, $url, $exitKey, $confPath)
 # import se recusa a sobrescrever. Por isso: apagar antes, e so entao importar.
 function Import-TunnelProfile($cli, $confPath, $profile) {
     $existing = (Invoke-WireSock $cli @('list')).texto
-    if ($existing -match [regex]::Escape($profile)) {
+    if (Test-ProfileName $existing $profile) {
         Write-Step "Substituindo o perfil $profile que ja existia"
+        # Apagar o perfil que esta no ar deixaria o tunel num estado que o CLI nao explica.
+        if (Test-ProfileName (Invoke-WireSock $cli @('status')).texto $profile) {
+            $null = Invoke-WireSock $cli @('disconnect')
+        }
         $null = Invoke-WireSock $cli @('delete', $profile)
     }
 
@@ -1295,9 +1330,30 @@ function Import-TunnelProfile($cli, $confPath, $profile) {
     if ($importado.codigo -ne 0) { throw "O WireSock recusou o perfil: $output" }
 
     $after = (Invoke-WireSock $cli @('list')).texto
-    if ($after -notmatch [regex]::Escape($profile)) {
+    if (-not (Test-ProfileName $after $profile)) {
         throw "Importei o perfil mas o WireSock nao o lista. Saida: $after"
     }
+}
+
+# Reescreve so a rota de um perfil exportado. Devolve as linhas novas.
+#
+# A linha AllowedIPs vira `$rota`, e todo o resto fica como estava -- inclusive a chave, que e
+# o motivo de exportar em vez de provisionar de novo. Se faltar DNS, ele entra logo depois do
+# Address, dentro do [Interface]: sem ele, quem esta no tunel resolve pelo resolvedor de casa,
+# e o GeoDNS do Discord devolve servidor brasileiro mesmo com os pacotes saindo pelo Chile.
+#
+# O DNS e procurado no arquivo inteiro ANTES de reescrever. Olhar linha a linha, como o reparo
+# fazia, poe um segundo DNS em todo perfil que ja tem um: o Address vem antes do DNS, e o DNS
+# novo entrava antes de o loop chegar ao antigo. Pego pela prova em PowerShell, 12/09.
+function Set-ProfileRoute([string[]] $linhas, [string] $rota) {
+    $saida = New-Object Collections.Generic.List[string]
+    $temDns = [bool] ($linhas | Where-Object { $_ -match '^\s*DNS\s*=' })
+    foreach ($l in $linhas) {
+        if ($l -match '^\s*AllowedIPs\s*=') { $saida.Add("AllowedIPs = $rota"); continue }
+        $saida.Add($l)
+        if (-not $temDns -and $l -match '^\s*Address\s*=') { $saida.Add('DNS = 1.1.1.1'); $temDns = $true }
+    }
+    return , $saida.ToArray()
 }
 
 # Conserta um perfil que carrega a faixa interna em vez de rota.
@@ -1321,24 +1377,12 @@ function Repair-TunnelProfile($cli, $profile) {
         $null = Invoke-WireSock $cli @('export', $profile, $file)
         if (-not (Test-Path -LiteralPath $file)) { Write-Warn 'Nao consegui exportar o perfil.'; return $false }
 
-        $linhas = @(Get-Content -LiteralPath $file)
-        $saida = New-Object Collections.Generic.List[string]
-        $temDns = $false
-        foreach ($l in $linhas) {
-            if ($l -match '^\s*AllowedIPs\s*=') { $saida.Add('AllowedIPs = 0.0.0.0/0'); continue }
-            if ($l -match '^\s*DNS\s*=') { $temDns = $true }
-            $saida.Add($l)
-            # O DNS entra logo depois do Address, dentro do [Interface]. Sem ele, quem esta no
-            # tunel resolve pelo resolvedor de casa, e o GeoDNS do Discord devolve servidor
-            # brasileiro mesmo com os pacotes saindo pelo Chile.
-            if (-not $temDns -and $l -match '^\s*Address\s*=') { $saida.Add('DNS = 1.1.1.1'); $temDns = $true }
-        }
-
+        $saida = Set-ProfileRoute @(Get-Content -LiteralPath $file) '0.0.0.0/0'
         Set-Content -LiteralPath $file -Value $saida -Encoding UTF8
 
         # Derrubar so se o que esta no ar for este perfil: `disconnect` nao escolhe, e
         # consertar um perfil parado nao pode desligar o tunel que a pessoa esta usando.
-        if ((Invoke-WireSock $cli @('status')).texto -match [regex]::Escape($profile)) {
+        if (Test-ProfileName (Invoke-WireSock $cli @('status')).texto $profile) {
             $null = Invoke-WireSock $cli @('disconnect')
         }
         $null = Invoke-WireSock $cli @('delete', $profile)
@@ -1352,6 +1396,80 @@ function Repair-TunnelProfile($cli, $profile) {
         # O arquivo exportado tem a chave privada dentro. Ele morre aqui, de qualquer jeito.
         Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
     }
+}
+
+# Cria o perfil de controle a partir do completo que ja existe.
+#
+# E o caminho de quem ja usa: essas pessoas tem o completo e nao tem o de controle. Mesma
+# receita do reparo -- exportar, reescrever so a rota, importar, apagar -- e pela mesma razao:
+# sem convite, sem chave nova, sem peer novo na saida. O de controle usa a MESMA chave, e e
+# isso que faz o gateway do Discord sobreviver a troca entre os dois perfis.
+#
+# O arquivo tem de ter o nome do perfil de controle: o WireSock nomeia o perfil pelo arquivo.
+function New-ControlProfile($cli, $profile) {
+    $controle = Get-ControlProfileName $profile
+    Write-Step "Criando o perfil $controle a partir de $profile (sem convite e sem chave nova)"
+
+    $dir = Join-Path $env:TEMP "streamfix-ctl-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+    $origem = Join-Path $dir 'origem.conf'
+    $file = Join-Path $dir "$controle.conf"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    try {
+        $null = Invoke-WireSock $cli @('export', $profile, $origem)
+        if (-not (Test-Path -LiteralPath $origem)) { Write-Warn "Nao consegui exportar o perfil $profile."; return $false }
+
+        $saida = Set-ProfileRoute @(Get-Content -LiteralPath $origem) $ControlRange
+        Set-Content -LiteralPath $file -Value $saida -Encoding UTF8
+
+        # Um de controle antigo (de uma rota que mudou, por exemplo) sai antes: o import nao
+        # sobrescreve. Derrubar so se for ele que estiver no ar.
+        if (Test-ProfileName (Invoke-WireSock $cli @('list')).texto $controle) {
+            if (Test-ProfileName (Invoke-WireSock $cli @('status')).texto $controle) {
+                $null = Invoke-WireSock $cli @('disconnect')
+            }
+            $null = Invoke-WireSock $cli @('delete', $controle)
+        }
+
+        $importado = Invoke-WireSock $cli @('import', $file)
+        if ($importado.codigo -ne 0 -or -not (Test-ProfileName (Invoke-WireSock $cli @('list')).texto $controle)) {
+            Write-Warn "Nao consegui importar o perfil ${controle}: $($importado.texto)"
+            return $false
+        }
+
+        Write-Ok "Perfil $controle criado: o Discord fica sem Trava 1 e com a voz direta."
+        return $true
+    } finally {
+        # O exportado e o derivado tem a chave privada dentro. Morrem aqui, de qualquer jeito.
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# O perfil de controle existe e carrega a faixa certa? Uma faixa diferente (de uma versao
+# antiga, ou editada a mao) conta como nao existir: o instalador refaz.
+function Test-ControlProfile($cli, $profile) {
+    $controle = Get-ExistingTunnel $cli (Get-ControlProfileName $profile)
+    return ($controle -and (Test-SameRoute $controle.rota $ControlRange))
+}
+
+# Poe no ar o perfil `$alvo`, que carrega `$rota`.
+#
+# O `connect` com outro perfil de pe e recusado sem log (medido em 11/09), entao o outro tem de
+# cair antes -- mas so se for um dos nossos: `disconnect` nao escolhe perfil, e derrubar um
+# tunel que a pessoa usa para outra coisa nao e trabalho do instalador.
+function Connect-Level($cli, $alvo, $rota, [string[]] $nossos) {
+    $status = (Invoke-WireSock $cli @('status')).texto
+    if (Test-ProfileName $status $alvo) {
+        Write-Ok "Tunel de pe no perfil $alvo."
+        return $true
+    }
+    foreach ($p in $nossos) {
+        if (Test-ProfileName $status $p) {
+            Write-Step "Trocando o perfil $p pelo $alvo"
+            $null = Invoke-WireSock $cli @('disconnect')
+            break
+        }
+    }
+    return (Connect-Tunnel $cli $alvo $rota)
 }
 
 # Sobe o tunel, e confere que subiu.
@@ -1369,7 +1487,10 @@ function Repair-TunnelProfile($cli, $profile) {
 #
 # Falhar aqui NAO derruba a instalacao: o plugin tenta subir sozinho no `start()`. O que muda e
 # que a pessoa e avisada de que precisa reabrir o Discord, em vez de descobrir pelo botao cinza.
-function Connect-Tunnel($cli, $profile) {
+#
+# `$rotaEsperada` e o que o perfil deve carregar: rota padrao no completo, a faixa de controle
+# no de controle. Cada um conferido contra o seu.
+function Connect-Tunnel($cli, $profile, [string] $rotaEsperada = '0.0.0.0/0') {
     Write-Step "Subindo o tunel no perfil $profile"
 
     $saidaLog = Join-Path $env:TEMP "streamfix-connect-$([guid]::NewGuid().ToString('N').Substring(0,8)).log"
@@ -1401,7 +1522,7 @@ function Connect-Tunnel($cli, $profile) {
 
     # Quem diz se subiu e o status, nao o codigo de saida.
     $status = (Invoke-WireSock $cli @('status')).texto
-    if ($status -notmatch [regex]::Escape($profile)) {
+    if (-not (Test-ProfileName $status $profile)) {
         Write-Warn 'O WireSock nao confirmou a conexao.'
         return $false
     }
@@ -1428,14 +1549,18 @@ function Connect-Tunnel($cli, $profile) {
         # "conectado" que nao servia para coisa nenhuma.
         if ($log -match 'AllowedIPs=([^"\r\n]+)') {
             $rota = $Matches[1].Trim()
-            if ($rota -ne '0.0.0.0/0') {
-                Write-Warn "O tunel subiu carregando so $rota, e o Discord nao esta nessa faixa."
-                Write-Host '  Ele nao vai servir para nada. Rode o instalador de novo para consertar o perfil.' -ForegroundColor DarkGray
+            if (-not (Test-SameRoute $rota $rotaEsperada)) {
+                Write-Warn "O tunel subiu carregando $rota, e o perfil $profile deveria carregar $rotaEsperada."
+                Write-Host '  Assim ele nao faz o que precisa. Rode o instalador de novo para consertar o perfil.' -ForegroundColor DarkGray
                 return $false
             }
         }
 
-        Write-Ok 'Tunel de pe, levando so o Discord, com rota para tudo.'
+        if (Test-SameRoute $rotaEsperada '0.0.0.0/0') {
+            Write-Ok 'Tunel de pe, levando so o Discord, com rota para tudo.'
+        } else {
+            Write-Ok 'Tunel de pe, levando so o controle do Discord. A voz e o video saem direto.'
+        }
         return $true
     }
 
@@ -1473,13 +1598,14 @@ function Install-Tunnel($url, $exitKey, $profile) {
                 }
             }
 
+            # Quem ja usa tem o completo e nao tem o de controle. Ele e derivado daqui, com a
+            # mesma chave. Se nao der, a pessoa segue so com o completo, que e o que ela ja tinha.
+            $temControle = Test-ControlProfile $cli $profile
+            if (-not $temControle) { $temControle = New-ControlProfile $cli $profile }
+
             # Configurado nao quer dizer de pe. Se estiver fora, o Discord abriria pelo Brasil.
-            $status = (Invoke-WireSock $cli @('status')).texto
-            if ($status -notmatch [regex]::Escape($profile)) {
-                $existente | Add-Member -NotePropertyName conectado -NotePropertyValue (Connect-Tunnel $cli $profile) -Force
-            } else {
-                $existente | Add-Member -NotePropertyName conectado -NotePropertyValue $true -Force
-            }
+            $existente | Add-Member -NotePropertyName conectado -NotePropertyValue (Connect-Normal $cli $profile $temControle) -Force
+            $existente | Add-Member -NotePropertyName temControle -NotePropertyValue $temControle -Force
             return $existente
         }
     }
@@ -1490,20 +1616,47 @@ function Install-Tunnel($url, $exitKey, $profile) {
     # O arquivo nasce com a chave privada dentro. Ele vive o tempo do import e morre no finally,
     # ate quando algo falha no meio -- o WireSock guarda copia propria (medido em 11/09).
     $confPath = Join-Path $env:TEMP "$profile.conf"
+    # O provisionador grava o de controle ao lado, com o nome do perfil de controle.
+    $controlConfPath = Join-Path $env:TEMP "$(Get-ControlProfileName $profile).conf"
     try {
         $result = Invoke-Provisioner $provisionerDir $invite $url $exitKey $confPath
         Import-TunnelProfile $cli $confPath $result.perfil
+
+        # O de controle nao pode derrubar a instalacao: sem ele, o plugin usa so o completo,
+        # que e o comportamento de antes (spec, E5).
+        $temControle = $false
+        if ($result.arquivoControle) {
+            try {
+                Import-TunnelProfile $cli $result.arquivoControle $result.perfilControle
+                $temControle = $true
+            } catch {
+                Write-Warn "Nao consegui importar o perfil de controle: $($_.Exception.Message)"
+                Write-Host '  O StreamFix funciona assim mesmo, so com a voz mais lenta. Rodar o instalador de novo tenta outra vez.' -ForegroundColor DarkGray
+            }
+        }
 
         Write-Ok "Tunel pronto: $($result.endereco) pela saida $($result.endpoint)"
         Write-Host "  MTU medido: caminho $($result.mtuDoCaminho), tunel $($result.mtuDoTunel)" -ForegroundColor DarkGray
 
         # Antes de o Discord abrir, senao o gateway dele nasce pelo Brasil. Ver Connect-Tunnel.
-        $result | Add-Member -NotePropertyName conectado -NotePropertyValue (Connect-Tunnel $cli $result.perfil) -Force
+        $result | Add-Member -NotePropertyName conectado -NotePropertyValue (Connect-Normal $cli $result.perfil $temControle) -Force
+        $result | Add-Member -NotePropertyName temControle -NotePropertyValue $temControle -Force
         return $result
     } finally {
-        Remove-Item -LiteralPath $confPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $confPath, $controlConfPath -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $provisionerDir -Recurse -Force -ErrorAction SilentlyContinue
     }
+}
+
+# Poe no ar o estado normal antes de o Discord abrir: o perfil de controle, se ele existe, e o
+# completo se nao. Com o controle, o gateway nasce pelo Chile (a Trava 1 nao vem) e a voz sai
+# direta; o plugin empresta o completo quando uma conexao de midia nasce.
+function Connect-Normal($cli, $profile, $temControle) {
+    $controle = Get-ControlProfileName $profile
+    if ($temControle) {
+        return (Connect-Level $cli $controle $ControlRange @($profile, $controle))
+    }
+    return (Connect-Level $cli $profile '0.0.0.0/0' @($profile, $controle))
 }
 
 function Select-Persistence {

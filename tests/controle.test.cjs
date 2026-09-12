@@ -15,7 +15,9 @@ const { test } = require("node:test");
 const {
     controleWireSock, appsAplicados, mensagensDoLog, estadoDoStatus, saidaDoStatus,
     perfilDoArquivo, PRAZO_CONEXAO_MS, PRAZO_CURTO_MS,
+    contemPerfil, perfilAtivoDoStatus,
 } = require("../streamFix/tunnel/controle.ts");
+const { perfilDeControle } = require("../streamFix/tunnel/perfil.ts");
 
 const PERFIL = "streamfix-santiago";
 
@@ -307,4 +309,161 @@ test("importar recusa antes de executar quando o arquivo nao tem o nome do perfi
     assert.equal(r.ok, false);
     assert.match(r.motivo, /viraria "teste"/);
     assert.deepEqual(chamadas.map(a => [...a]), [], "nao adianta importar: o CLI ignoraria o nome pedido");
+});
+
+// --------------------------------------------------------------------------------------------
+// Tunel em dois niveis: dois perfis, um contido no nome do outro
+// --------------------------------------------------------------------------------------------
+
+const CONTROLE = "streamfix-santiago-controle";
+const STATUS_CONTROLE =
+    "Conectado ao servidor usando o perfil streamfix-santiago-controle\r\n" +
+    "Endereço externo: 177.42.223.136, Brazil, Salvador\r\n";
+
+test("o perfil de controle e o completo com -controle no fim", () => {
+    assert.equal(perfilDeControle(PERFIL), CONTROLE);
+});
+
+test("o nome casa inteiro: o completo nao esta no ar quando o controle esta", () => {
+    // O defeito que o `includes` tinha: `streamfix-santiago` esta contido em
+    // `streamfix-santiago-controle`. Com o controle de pe, o plugin acharia que o completo
+    // estava no ar e liberaria um Go Live que nasceria pelo Brasil.
+    assert.equal(estadoDoStatus(STATUS_CONTROLE, PERFIL), "fora");
+    assert.equal(estadoDoStatus(STATUS_CONTROLE, CONTROLE), "conectado");
+    assert.equal(estadoDoStatus(STATUS_CONECTADO, CONTROLE), "fora");
+    assert.equal(estadoDoStatus(STATUS_CONECTADO, PERFIL), "conectado");
+});
+
+test("o nome casa inteiro nas duas pontas, e com o \\r do CLI", () => {
+    assert.equal(contemPerfil("perfil streamfix-santiago\r\n", PERFIL), true);
+    assert.equal(contemPerfil("perfil streamfix-santiago2", PERFIL), false);
+    assert.equal(contemPerfil("perfil xstreamfix-santiago", PERFIL), false);
+    assert.equal(contemPerfil("perfil pre_streamfix-santiago", PERFIL), false);
+    assert.equal(contemPerfil("perfil streamfix-santiago.", PERFIL), true);
+    assert.equal(contemPerfil("qualquer coisa", ""), false);
+});
+
+test("o nome com caractere de regex e casado literalmente", () => {
+    assert.equal(contemPerfil("perfil a.b", "a.b"), true);
+    assert.equal(contemPerfil("perfil axb", "a.b"), false);
+});
+
+test("perfilAtivo diz qual dos dois esta no ar, ou nenhum, ou que nao sabe", () => {
+    assert.equal(perfilAtivoDoStatus(STATUS_CONTROLE, [PERFIL, CONTROLE]), CONTROLE);
+    assert.equal(perfilAtivoDoStatus(STATUS_CONECTADO, [PERFIL, CONTROLE]), PERFIL);
+    assert.equal(perfilAtivoDoStatus(STATUS_FORA, [PERFIL, CONTROLE]), null);
+    assert.equal(perfilAtivoDoStatus("", [PERFIL, CONTROLE]), "desconhecido");
+});
+
+test("perfilAtivo com o CLI falhando e desconhecido", async () => {
+    const { c } = controleDe({ status: new Error("sem servico") });
+    assert.equal(await c.perfilAtivo([PERFIL, CONTROLE]), "desconhecido");
+});
+
+test("importar nao confunde o perfil com outro que o contem no nome", async () => {
+    // Na list real, os nomes vem um por linha. Com so o de controle importado, o completo nao
+    // pode ser dado por presente.
+    const { c } = controleDe({
+        import: "Falha ao importar",
+        list: `Perfis disponíveis:\r\n - spike-full\r\n - ${CONTROLE}\r\n`,
+    });
+    const r = await c.importar(`C:/tmp/${PERFIL}.conf`, PERFIL);
+    assert.equal(r.ok, false);
+    assert.match(r.motivo, /nao aparece na lista/);
+});
+
+/** Um CLI com estado: o `status` responde o perfil que o `connect` pos no ar. */
+function cliComEstado(inicial) {
+    let noAr = inicial;
+    const chamadas = [];
+    const executar = async (_exe, args) => {
+        chamadas.push([...args]);
+        if (args[0] === "status") {
+            return noAr
+                ? `Conectado ao servidor usando o perfil ${noAr}\r\nEndereço externo: 159.112.151.37, Chile, Santiago\r\n`
+                : "Não conectado\r\n";
+        }
+        if (args[0] === "disconnect") { noAr = null; return "Conexão encerrada"; }
+        if (args[0] === "connect") {
+            // Medido em 11/09: com outro perfil de pe, o connect e recusado sem log.
+            if (noAr) return "Outra conexão já está em andamento.\r\n";
+            noAr = args[1];
+            return LOG_BOM;
+        }
+        throw new Error(`comando nao roteirizado: ${args[0]}`);
+    };
+    let t = 0;
+    const c = controleWireSock({ executar, dormir: async () => {}, agora: () => (t += 100) });
+    return { c, chamadas, noAr: () => noAr };
+}
+
+test("trocar derruba antes de conectar, porque o connect com outro de pe e recusado sem log", async () => {
+    const { c, chamadas, noAr } = cliComEstado(CONTROLE);
+    const r = await c.trocar(PERFIL);
+    assert.equal(r.ok, true);
+    assert.equal(noAr(), PERFIL);
+    assert.deepEqual(chamadas.map(a => a[0]).filter(x => x !== "status"), ["disconnect", "connect"]);
+    assert.ok(r.duracaoMs > 0);
+});
+
+test("trocar para o perfil que ja esta no ar nao derruba nem conecta", async () => {
+    const { c, chamadas } = cliComEstado(CONTROLE);
+    assert.equal((await c.trocar(CONTROLE)).ok, true);
+    assert.deepEqual(chamadas.map(a => a[0]), ["status"]);
+});
+
+test("no controle, pedir o completo troca de verdade", async () => {
+    // O lado perigoso do nome contido: com o `includes`, o completo parecia no ar com o
+    // controle de pe, o `trocar` nao faria nada, e o Go Live nasceria pelo Brasil.
+    const { c, chamadas, noAr } = cliComEstado(CONTROLE);
+    assert.equal((await c.trocar(PERFIL)).ok, true);
+    assert.equal(noAr(), PERFIL);
+    assert.equal((await c.trocar(CONTROLE)).ok, true);
+    assert.equal(noAr(), CONTROLE);
+    assert.equal(chamadas.filter(a => a[0] === "connect").length, 2);
+});
+
+test("trocar que falha no connect devolve o motivo e nao deixa tunel sem conferir", async () => {
+    const { c, chamadas } = controleDe({
+        status: STATUS_CONTROLE,
+        disconnect: "",
+        connect: log("Kill switch is off", "AllowedIPs=0.0.0.0/0"),
+    });
+    const r = await c.trocar(PERFIL);
+    assert.equal(r.ok, false);
+    assert.match(r.motivo, /maquina inteira/);
+    assert.equal(chamadas.filter(a => a[0] === "disconnect").length, 2, "derruba o controle e o completo errado");
+});
+
+test("trocar nao espera o endereco externo: dois status e mais nada", async () => {
+    // Medido na fase 8 (12/09): cada `status` leva ~220 ms, e o endereco externo so aparece
+    // segundos depois do `connect`. Esperar por ele custava de 1 a 1,5 s em cada troca -- no
+    // clique do Go Live, espera pura -- e ninguem o usa: no controle, ele e o IP de casa.
+    const { c, chamadas } = controleDe({
+        status: n => n === 1 ? STATUS_CONTROLE : STATUS_SEM_GEO,
+        disconnect: "",
+        connect: LOG_BOM,
+    });
+    const r = await c.trocar(PERFIL);
+    assert.equal(r.ok, true);
+    assert.equal(chamadas.filter(a => a[0] === "status").length, 2, "o de antes da troca e o que confirma");
+});
+
+test("subir continua esperando o endereco externo", async () => {
+    // O `subir` sozinho e o que o instalador e o diagnostico usam; la o endereco e informacao.
+    const { c, chamadas } = controleDe({ status: STATUS_SEM_GEO, connect: LOG_BOM }, { tentativasDeSaida: 3 });
+    await c.subir(PERFIL);
+    assert.ok(chamadas.filter(a => a[0] === "status").length > 2);
+});
+
+test("existe casa o nome inteiro na list", async () => {
+    // Com so o completo importado, o controle nao existe -- e o plugin tem de ficar no completo.
+    const { c } = controleDe({ list: `Perfis disponíveis:\r\n - ${PERFIL}\r\n` });
+    assert.equal(await c.existe(PERFIL), true);
+    assert.equal(await c.existe(CONTROLE), false);
+});
+
+test("existe com o CLI falhando e false: sem saber, o plugin fica no completo", async () => {
+    const { c } = controleDe({ list: new Error("sem servico") });
+    assert.equal(await c.existe(CONTROLE), false);
 });

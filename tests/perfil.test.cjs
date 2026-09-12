@@ -12,7 +12,7 @@ const { test } = require("node:test");
 
 const {
     gerarPerfil, medirMtuDoCaminho, mtuDoTunel, comandoPing, respostaChegou,
-    medirMtuComAlternativas,
+    medirMtuComAlternativas, FAIXA_CONTROLE, perfilDeControle,
     CABECALHO_ICMP, SOBRECARGA_WIREGUARD, CARGA_MAXIMA,
 } = require("../streamFix/tunnel/perfil.ts");
 
@@ -200,4 +200,33 @@ test("a medicao para no primeiro alvo que responde", async () => {
 test("nenhum alvo respondendo continua sendo null", async () => {
     assert.equal(await medirMtuComAlternativas(["a", "b"], () => async () => false), null);
     assert.equal(await medirMtuComAlternativas([], () => async () => true), null);
+});
+
+// --------------------------------------------------------------------------------------------
+// Tunel em dois niveis
+// --------------------------------------------------------------------------------------------
+
+test("o perfil de controle difere do completo SO na linha AllowedIPs", () => {
+    // Mesma chave, mesmo endereco, mesmo peer, mesmo AllowedApps. E isso que deixa o gateway do
+    // Discord sobreviver a troca entre os dois (pesquisa, 12h). Qualquer outra diferenca -- um
+    // AllowedApps esquecido, sobretudo -- e defeito.
+    const completo = linhas(gerarPerfil(BASE));
+    const controle = linhas(gerarPerfil({ ...BASE, destinos: FAIXA_CONTROLE }));
+    assert.equal(completo.length, controle.length);
+    const diferentes = completo.map((l, i) => [l, controle[i]]).filter(([a, b]) => a !== b);
+    assert.deepEqual(diferentes, [["AllowedIPs = 0.0.0.0/0", `AllowedIPs = ${FAIXA_CONTROLE}`]]);
+});
+
+test("a faixa de controle leva o gateway do Discord e o DNS do perfil, e nao a rota padrao", () => {
+    const faixas = FAIXA_CONTROLE.split(",").map(x => x.trim());
+    assert.deepEqual(faixas, ["162.159.128.0/17", "1.1.1.1/32"]);
+    assert.ok(!faixas.includes("0.0.0.0/0"), "com a rota padrao, o controle levaria a midia junto");
+    // O DNS do perfil tem de estar dentro da faixa: resolver pelo Brasil devolve servidor
+    // brasileiro (GeoDNS), mesmo com o gateway saindo pelo Chile.
+    const dns = /^DNS = (.+)$/m.exec(gerarPerfil(BASE))[1];
+    assert.ok(faixas.includes(`${dns}/32`), `o DNS ${dns} ficou fora da faixa de controle`);
+});
+
+test("o nome do perfil de controle e o do completo com -controle no fim", () => {
+    assert.equal(perfilDeControle("streamfix-santiago"), "streamfix-santiago-controle");
 });

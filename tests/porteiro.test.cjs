@@ -12,7 +12,9 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 
-const { decidir, aviso, hostDoEndpoint } = require("../streamFix/tunnel/porteiro.ts");
+const {
+    decidir, aviso, hostDoEndpoint, donoDoStream, decidirClique, conferirNascimento, AVISO_STREAM_FORA
+} = require("../streamFix/tunnel/porteiro.ts");
 
 const SAIDA = "159.112.151.37";
 const BRASIL = "177.42.223.136";
@@ -161,4 +163,77 @@ test("a causa muda a frase, porque muda o que adianta fazer", () => {
 
 test("quebrado sem causa avisa como entrega, que e o caso comum", () => {
     assert.match(aviso({ estado: "quebrado" }), /comece de novo/);
+});
+
+test("o dono do stream e o ultimo pedaco da chave, em servidor e em DM", () => {
+    assert.equal(donoDoStream("guild:1080853314507378709:1080853314507378713:389561533342023681"), "389561533342023681");
+    assert.equal(donoDoStream("call:1080853314507378713:389561533342023681"), "389561533342023681");
+});
+
+test("uma chave cujo servidor contem o nosso id nao e nossa", () => {
+    // O `includes` de antes aceitava esta: o id do servidor comeca com o id de quem transmite.
+    const eu = "38956153334202368";
+    assert.notEqual(donoDoStream(`guild:${eu}1:1080853314507378713:1366453661970071633`), eu);
+});
+
+test("chave ausente ou fora do formato nao tem dono", () => {
+    for (const k of [undefined, null, "", "guild", "guild:1:abc", 42]) assert.equal(donoDoStream(k), null, String(k));
+});
+
+// --------------------------------------------------------------------------------------------
+// O tunel em dois niveis
+// --------------------------------------------------------------------------------------------
+
+const TROCA_BOA = { ok: true, completo: true, motivo: null };
+
+function clique(extra = {}) {
+    return { exigirTunel: true, doisNiveis: true, troca: TROCA_BOA, localAddress: SAIDA, saidaEsperada: SAIDA, ...extra };
+}
+
+test("em dois niveis, voz brasileira com a troca bem feita libera", () => {
+    // A voz anda no controle a maior parte do tempo, e o stream ainda vai nascer, noutra conexao.
+    // Usar a voz como negativa aqui recusaria todo Go Live de quem esta no nivel normal.
+    assert.deepEqual(decidirClique(clique({ localAddress: BRASIL })), { ok: true, nota: null });
+});
+
+test("a troca que falhou recusa com o motivo, nos dois modos", () => {
+    for (const doisNiveis of [true, false]) {
+        const v = decidirClique(clique({ doisNiveis, troca: { ok: false, completo: false, motivo: "o WireSock nao respondeu em 10000 ms" } }));
+        assert.equal(v.ok, false);
+        assert.match(v.motivo, /nao respondeu/);
+    }
+});
+
+test("troca que deixou o controle no ar nao conta como troca boa", () => {
+    // A troca para o completo falhou e caiu para o controle: o `ok` do controle nao pode liberar.
+    const v = decidirClique(clique({ troca: { ok: true, completo: false, motivo: null } }));
+    assert.equal(v.ok, false);
+});
+
+test("no completo sempre, a regra de antes vale inteira: voz fora recusa", () => {
+    // O caso que a medicao de 11/09 fixou continua recusado: o Discord viu a midia sair por
+    // outro lugar, e isso e uma negativa confiavel mesmo com a troca dizendo que deu certo.
+    const v = decidirClique(clique({ doisNiveis: false, localAddress: BRASIL }));
+    assert.equal(v.ok, false);
+    assert.match(v.motivo, /177\.42\.223\.136/);
+    assert.deepEqual(decidirClique(clique({ doisNiveis: false })), { ok: true, nota: null });
+});
+
+test("com o porteiro desligado, o clique passa mesmo com a troca falha", () => {
+    const v = decidirClique(clique({ exigirTunel: false, troca: { ok: false, completo: false, motivo: "x" } }));
+    assert.equal(v.ok, true);
+});
+
+test("stream nascido com endereco brasileiro gera o aviso de recriar", () => {
+    assert.equal(conferirNascimento(BRASIL, SAIDA), AVISO_STREAM_FORA);
+    assert.match(AVISO_STREAM_FORA, /Pare e comece de novo/);
+});
+
+test("stream nascido na saida nao gera aviso", () => {
+    assert.equal(conferirNascimento(SAIDA, SAIDA), null);
+});
+
+test("sem leitura ou sem saida configurada, a conferencia cala: aviso sem prova e alarme falso", () => {
+    for (const local of [null, undefined, ""]) assert.equal(conferirNascimento(local, SAIDA), null, String(local));
+    assert.equal(conferirNascimento(BRASIL, null), null);
 });

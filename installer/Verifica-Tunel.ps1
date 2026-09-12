@@ -23,8 +23,11 @@ param(
     # configuracoes do plugin, sem o `:porta`.
     [string] $ExitHost = '',
 
-    # Quem responde "qual e o meu IP". Trocavel para quem nao quiser bater na Cloudflare.
-    [string] $TraceUrl = 'https://cloudflare.com/cdn-cgi/trace'
+    # Quem responde "qual e o meu IP". Tem de estar DENTRO das duas rotas do tunel, a completa
+    # e a de controle, senao o teste negativo passa mesmo com o AllowedApps quebrado: o pedido
+    # nem entraria no tunel. `1.1.1.1` esta na faixa de controle; `cloudflare.com`, que era o
+    # padrao, nao esta. E `discord.com` recusa este caminho (403). Medido em 12/09.
+    [string] $TraceUrl = 'https://1.1.1.1/cdn-cgi/trace'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,6 +47,37 @@ function Find-WireSockCli {
     return $null
 }
 
+# O perfil aparece no texto como nome inteiro? `streamfix-santiago` esta contido em
+# `streamfix-santiago-controle`, entao procurar o texto solto nao serve. Mesma regra do
+# instalador (Test-ProfileName) e do plugin (contemPerfil).
+function Test-ProfileName([string] $texto, [string] $perfil) {
+    if (-not $perfil) { return $false }
+    return $texto -match ('(?<![\p{L}\p{N}_-])' + [regex]::Escape($perfil) + '(?![\p{L}\p{N}_-])')
+}
+
+# O host do Endpoint do perfil completo. Serve quando o de controle esta no ar: nesse caso o
+# "endereco externo" do `status` e o de CASA -- a consulta de geo do WireSock nao passa pela
+# faixa de controle -- e usa-lo como saida faria o teste negativo acusar a maquina inteira no
+# tunel a toa. `export` escreve o perfil inteiro, com a chave, entao o arquivo morre no finally.
+function Get-ExitHostFromProfile($cli, $perfil) {
+    $dir = Join-Path $env:TEMP "sf-verif-$([guid]::NewGuid().ToString('N').Substring(0,8))"
+    $file = Join-Path $dir 'perfil.conf'
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $cli export $perfil $file 2>&1 | Out-Null
+        if (-not (Test-Path -LiteralPath $file)) { return '' }
+        foreach ($l in (Get-Content -LiteralPath $file)) {
+            if ($l -match '^\s*Endpoint\s*=\s*([^:\s]+):\d+\s*$') { return $Matches[1] }
+        }
+        return ''
+    } finally {
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+$Controle = "$Profile-controle"
+
 Write-Host ''
 Write-Host '  StreamFix -- conferindo o tunel' -ForegroundColor White
 Write-Host ''
@@ -58,18 +92,27 @@ if (-not $cli) {
 }
 
 $status = (& $cli status 2>&1 | Out-String).Trim()
-if ($status -match [regex]::Escape($Profile)) {
-    Write-Ok "O tunel esta de pe no perfil $Profile"
+$noControle = Test-ProfileName $status $Controle
+if (Test-ProfileName $status $Profile) {
+    Write-Ok "O tunel esta de pe no perfil $Profile (completo)"
+} elseif ($noControle) {
+    Write-Ok "O tunel esta de pe no perfil $Controle (so o controle; a midia sai direta)"
 } else {
-    Write-Bad "O tunel nao esta de pe no perfil $Profile"
+    Write-Bad "O tunel nao esta de pe nem no perfil $Profile nem no $Controle"
     Write-Info "O WireSock disse: $status"
     $problemas++
 }
 
-# A saida pode ser descoberta pelo proprio status, que informa o endereco externo.
-if (-not $ExitHost -and $status -match '(\d{1,3}(?:\.\d{1,3}){3})') {
-    $ExitHost = $Matches[1]
-    Write-Info "Saida detectada pelo WireSock: $ExitHost"
+# A saida pode ser descoberta pelo proprio status, que informa o endereco externo -- mas so no
+# completo. No de controle, esse endereco e o de casa. Ver Get-ExitHostFromProfile.
+if (-not $ExitHost) {
+    if ($noControle) {
+        $ExitHost = Get-ExitHostFromProfile $cli $Profile
+        if ($ExitHost) { Write-Info "Saida lida do perfil ${Profile}: $ExitHost" }
+    } elseif ($status -match '(\d{1,3}(?:\.\d{1,3}){3})') {
+        $ExitHost = $Matches[1]
+        Write-Info "Saida detectada pelo WireSock: $ExitHost"
+    }
 }
 
 # ---------------------------------------------------------------- 2. O TESTE NEGATIVO

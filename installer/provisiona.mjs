@@ -1,6 +1,7 @@
 /*
  * Provisiona o tunel: mede o MTU, gera o par de chaves, troca o convite por um endereco na
- * saida, e escreve o `.conf` que o WireSock vai importar.
+ * saida, e escreve os dois `.conf` que o WireSock vai importar: o completo e o de controle (ver
+ * `FAIXA_CONTROLE` em perfil.ts).
  *
  * **Por que isto e JavaScript e nao PowerShell.** Toda a decisao que importa aqui ja existe em
  * TypeScript e ja tem teste: `perfil.ts` (56 testes de geracao e de MTU), `cliente.ts` (15 do
@@ -24,11 +25,14 @@
  */
 
 import { execFile } from "node:child_process";
-import { writeFileSync } from "node:fs";
-import { basename } from "node:path";
+import { rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { argv, exit, platform, stderr, stdin, stdout } from "node:process";
 
-import { comandoPing, gerarPerfil, medirMtuComAlternativas, mtuDoTunel, respostaChegou } from "../streamFix/tunnel/perfil.ts";
+import {
+    comandoPing, FAIXA_CONTROLE, gerarPerfil, medirMtuComAlternativas, mtuDoTunel, perfilDeControle,
+    respostaChegou
+} from "../streamFix/tunnel/perfil.ts";
 import { registrarNaSaida } from "../provisionamento/cliente.ts";
 
 const PRAZO_PING_MS = 5000;
@@ -143,7 +147,7 @@ async function principal() {
     const registro = await registrarNaSaida(url, convite, transporte, chaveEsperada);
     if (!registro.ok) responde({ ok: false, erro: registro.motivo });
 
-    const conf = gerarPerfil({
+    const base = {
         chavePrivada: registro.privada,
         endereco: registro.dados.endereco,
         mtu,
@@ -158,17 +162,36 @@ async function principal() {
         // maquina onde se testava de verdade usava um perfil escrito a mao, anterior a isto.
         // O padrao de `gerarPerfil` -- 0.0.0.0/0 -- sempre esteve certo; o erro era sobrescreve-lo.
         apps
-    });
+    };
 
-    // 0o600 desde a criacao: o arquivo nasce com a privada dentro, e nao existe instante em que
-    // ele esteja legivel para outra conta. No Windows o modo vale pouco, mas o arquivo tambem
-    // vive pouco -- quem chama apaga depois de importar.
-    writeFileSync(arquivo, conf, { encoding: "utf8", mode: 0o600 });
+    // Tunel em dois niveis: o mesmo registro vira dois perfis. O completo, com o padrao de
+    // `gerarPerfil`, e o de controle, com so a FAIXA_CONTROLE. Mesma chave e mesmo endereco --
+    // e isso que deixa o gateway do Discord sobreviver a troca entre eles (pesquisa, 12h). Um
+    // convite continua valendo um peer.
+    const perfilControle = perfilDeControle(perfil);
+    const arquivoControle = join(dirname(arquivo), `${perfilControle}.conf`);
+    const escritos = [];
+    try {
+        // 0o600 desde a criacao: o arquivo nasce com a privada dentro, e nao existe instante em
+        // que ele esteja legivel para outra conta. No Windows o modo vale pouco, mas o arquivo
+        // tambem vive pouco -- quem chama apaga depois de importar.
+        writeFileSync(arquivo, gerarPerfil(base), { encoding: "utf8", mode: 0o600 });
+        escritos.push(arquivo);
+        writeFileSync(arquivoControle, gerarPerfil({ ...base, destinos: FAIXA_CONTROLE }), { encoding: "utf8", mode: 0o600 });
+        escritos.push(arquivoControle);
+    } catch (erro) {
+        // Metade feita e pior que nada: sobraria um arquivo com a privada que ninguem vai
+        // importar nem apagar.
+        for (const f of escritos) rmSync(f, { force: true });
+        throw erro;
+    }
 
     responde({
         ok: true,
         perfil,
         arquivo,
+        perfilControle,
+        arquivoControle,
         endereco: registro.dados.endereco,
         endpoint: registro.dados.endpoint,
         faixa: registro.dados.faixa,

@@ -232,6 +232,32 @@ describe("provisionamento", () => {
         assert.ok(conf.indexOf("DNS =") < conf.indexOf("[Peer]"));
     });
 
+    test("grava os dois perfis do mesmo registro, e nenhum outro arquivo", async () => {
+        // Tunel em dois niveis: um convite, um peer, dois arquivos. O de controle tem o nome que
+        // o plugin procura (perfilDeControle) e so a faixa de controle na rota.
+        const sub = join(pasta, "dois");
+        require("node:fs").mkdirSync(sub, { recursive: true });
+        const arquivo = join(sub, "streamfix-dois.conf");
+        const r = await provisionar(CONVITE_BOM, ["--arquivo", arquivo]);
+
+        assert.equal(r.json.ok, true, r.saida + r.erro);
+        assert.equal(r.json.perfilControle, "streamfix-dois-controle");
+        assert.equal(r.json.arquivoControle, join(sub, "streamfix-dois-controle.conf"));
+        assert.deepEqual(readdirSync(sub).sort(), ["streamfix-dois-controle.conf", "streamfix-dois.conf"]);
+
+        const completo = readFileSync(arquivo, "utf8").split("\n");
+        const controle = readFileSync(r.json.arquivoControle, "utf8").split("\n");
+        const diferentes = completo.map((l, i) => [l, controle[i]]).filter(([a, b]) => a !== b);
+        assert.deepEqual(diferentes, [["AllowedIPs = 0.0.0.0/0", "AllowedIPs = 162.159.128.0/17, 1.1.1.1/32"]]);
+    });
+
+    test("convite errado nao deixa nenhum dos dois perfis", async () => {
+        const arquivo = join(pasta, "streamfix-nenhum.conf");
+        await provisionar("nao-sou-convite", ["--arquivo", arquivo]);
+        assert.ok(!existsSync(arquivo));
+        assert.ok(!existsSync(join(pasta, "streamfix-nenhum-controle.conf")));
+    });
+
     test("o perfil gerado leva o AllowedApps: sem ele o tunel levaria a maquina inteira", async () => {
         const arquivo = join(pasta, "streamfix-apps.conf");
         await provisionar(CONVITE_BOM, ["--arquivo", arquivo]);
@@ -300,12 +326,25 @@ describe("instalador", () => {
             );
         }
 
-        for (const morta of ["proxy", "excludedCountries"]) {
+        for (const morta of ["proxy", "excludedCountries", "tunelPermanente"]) {
             assert.ok(
                 !new RegExp(`-NotePropertyName ${morta}\\b`).test(INSTALADOR),
                 `o instalador ainda escreve "${morta}", que o plugin nao le mais`
             );
+            // E apaga de quem atualiza: o `tunelPermanente` ligado de uma instalacao antiga nao
+            // pode ficar no settings.json fingindo que ainda manda em alguma coisa.
+            assert.ok(
+                new RegExp(`foreach \\(\\$dead in @\\([^)]*'${morta}'`).test(INSTALADOR),
+                `o instalador nao apaga "${morta}" de quem atualiza`
+            );
         }
+
+        // O padrao do tunel em dois niveis e o controle. Reinstalar nao pode desligar o completo
+        // de quem o ligou de proposito, entao so escreve quando falta.
+        assert.match(
+            INSTALADOR,
+            /if \(-not \$plugin\.PSObject\.Properties\['tunelCompletoSempre'\]\) \{\s*\$plugin \| Add-Member -NotePropertyName tunelCompletoSempre -NotePropertyValue \$false/
+        );
     });
 
     test("o tunel sobe antes de o plugin ser copiado, e as configuracoes vem por ultimo", () => {
@@ -335,7 +374,14 @@ describe("instalador", () => {
         const fluxo = /function Invoke-Install\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
         const tunnel = /function Install-Tunnel\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
 
-        assert.match(tunnel, /Connect-Tunnel/, "Install-Tunnel nao sobe o tunel");
+        // A cadeia inteira, porque o nome solto num comentario passaria: Install-Tunnel chama
+        // Connect-Normal, que chama Connect-Level, que chama Connect-Tunnel.
+        const semComentario = t => t.split("\n").filter(l => !/^\s*#/.test(l)).join("\n");
+        const normal = /function Connect-Normal\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
+        const nivel = /function Connect-Level\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
+        assert.match(semComentario(tunnel), /Connect-Normal/, "Install-Tunnel nao sobe o tunel");
+        assert.match(semComentario(normal), /Connect-Level/);
+        assert.match(semComentario(nivel), /Connect-Tunnel/);
         assert.ok(fluxo.indexOf("Install-Tunnel") < fluxo.indexOf("Start-Discord"),
             "o tunel tem que subir antes de o Discord abrir");
     });
@@ -595,6 +641,143 @@ describe("instalador", () => {
         // UAC dela e o proprio winget. Auto-elevar faria o pnpm e o build rodarem como
         // administrador, deixando arquivos que o dono da conta nao consegue apagar.
         assert.ok(!/-Verb\s+RunAs/i.test(INSTALADOR), "apareceu uma auto-elevacao");
+    });
+
+    // ------------------------------------------------------------ tunel em dois niveis
+
+    const semComentario = t => t.split("\n").filter(l => !/^\s*#/.test(l)).join("\n");
+    const SCRIPTS = ["StreamFix-Installer.ps1", "Diagnostico-Tunel.ps1", "Verifica-Tunel.ps1"];
+    const fonteDe = arquivo => readFileSync(join(RAIZ, "installer", arquivo), "utf8");
+
+    test("a faixa de controle dos scripts e a mesma do perfil.ts", () => {
+        // Drift: o plugin procura o perfil de controle e o provisionador o gera a partir do
+        // perfil.ts; o instalador o deriva e confere com a sua copia. Se as duas copias
+        // divergirem, o Connect-Tunnel recusa o perfil que o provisionador acabou de gerar.
+        const { FAIXA_CONTROLE, perfilDeControle } = require("../streamFix/tunnel/perfil.ts");
+        for (const arquivo of ["StreamFix-Installer.ps1", "Diagnostico-Tunel.ps1"]) {
+            const m = /\$ControlRange = '([^']+)'/.exec(fonteDe(arquivo));
+            assert.ok(m, `${arquivo} nao declara a faixa de controle`);
+            assert.equal(m[1], FAIXA_CONTROLE, `${arquivo} diverge do perfil.ts`);
+        }
+        // O nome tambem: "<perfil>-controle" nos tres scripts e no perfil.ts.
+        assert.equal(perfilDeControle("p"), "p-controle");
+        assert.match(fonteDe("StreamFix-Installer.ps1"), /function Get-ControlProfileName\(\$profile\) \{ return "\$profile-controle" \}/);
+        assert.match(fonteDe("Diagnostico-Tunel.ps1"), /\$Controle = "\$Profile-controle"/);
+        assert.match(fonteDe("Verifica-Tunel.ps1"), /\$Controle = "\$Profile-controle"/);
+    });
+
+    test("nenhum script procura o nome do perfil como texto solto", () => {
+        // `streamfix-santiago` esta contido em `streamfix-santiago-controle`. Com o controle
+        // de pe, `-match [regex]::Escape($profile)` daria o completo por conectado.
+        for (const arquivo of SCRIPTS) {
+            const codigo = semComentario(fonteDe(arquivo));
+            const soltos = [...codigo.matchAll(/^.*-(not)?match \[regex\]::Escape\(\$[Pp]rofile\).*$/gm)].map(m => m[0].trim());
+            assert.deepEqual(soltos, [], `${arquivo}:\n${soltos.join("\n")}`);
+        }
+    });
+
+    test("o casamento exato dos scripts e o mesmo do plugin", () => {
+        // A mesma borda nos quatro lugares: nada de letra, digito, - ou _ colado ao nome.
+        const borda = "(?<![\\p{L}\\p{N}_-])";
+        const controle = readFileSync(join(RAIZ, "streamFix", "tunnel", "controle.ts"), "utf8");
+        assert.ok(controle.includes("(?<![\\\\p{L}\\\\p{N}_-])"), "o plugin mudou a regra");
+        for (const arquivo of SCRIPTS) {
+            assert.ok(fonteDe(arquivo).includes(borda), `${arquivo} nao usa a borda do nome inteiro`);
+        }
+    });
+
+    test("o perfil de controle e derivado do completo, sem convite e sem deixar chave em disco", () => {
+        const fn = /function New-ControlProfile\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
+        assert.match(fn, /'export', \$profile/, "sem exportar o completo nao da para reaproveitar a chave");
+        assert.match(fn, /Set-ProfileRoute[^\n]*\$ControlRange/, "a rota do derivado nao e a faixa de controle");
+        assert.ok(!/Invoke-Provisioner|Read-Invite/.test(fn), "derivar nao pode provisionar de novo");
+        assert.match(fn.slice(fn.indexOf("finally")), /Remove-Item -LiteralPath \$dir -Recurse/,
+            "o exportado e o derivado tem a chave e precisam morrer");
+    });
+
+    test("reinstalar sem convite cria o perfil de controle de quem ja usa", () => {
+        const fn = semComentario(/function Install-Tunnel\([\s\S]*?\n\}/.exec(INSTALADOR)[0]);
+        const guarda = fn.indexOf("Get-ExistingTunnel");
+        const deriva = fn.indexOf("New-ControlProfile");
+        const convite = fn.indexOf("Read-Invite");
+        assert.ok(guarda > 0 && deriva > guarda && deriva < convite,
+            "o controle tem de ser derivado no caminho de quem ja tem perfil, antes de pedir convite");
+    });
+
+    test("o estado normal e o controle, e sem ele o completo", () => {
+        const fn = semComentario(/function Connect-Normal\([\s\S]*?\n\}/.exec(INSTALADOR)[0]);
+        assert.match(fn, /if \(\$temControle\)[\s\S]*Connect-Level \$cli \$controle \$ControlRange/);
+        assert.match(fn, /Connect-Level \$cli \$profile '0\.0\.0\.0\/0'/, "sem o controle, o completo");
+    });
+
+    test("trocar de perfil so derruba o tunel se ele for nosso", () => {
+        const fn = semComentario(/function Connect-Level\([\s\S]*?\n\}/.exec(INSTALADOR)[0]);
+        const corte = fn.indexOf("disconnect");
+        assert.ok(corte > 0, "sem disconnect o connect e recusado sem log");
+        assert.match(fn.slice(0, corte), /foreach \(\$p in \$nossos\)[\s\S]*Test-ProfileName \$status \$p/,
+            "derruba sem conferir que o perfil no ar e um dos nossos");
+    });
+
+    test("o de controle e conferido contra a sua rota, nao contra a rota padrao", () => {
+        const fn = /function Connect-Tunnel\([\s\S]*?\n\}/.exec(INSTALADOR)[0];
+        assert.match(fn, /Test-SameRoute \$rota \$rotaEsperada/);
+    });
+
+    test("o teste negativo do Verifica pergunta a um endereco que esta nas duas rotas", () => {
+        // Com o controle no ar, um endereco fora da faixa nem entra no tunel: o teste negativo
+        // passaria com o AllowedApps quebrado. 1.1.1.1 esta na faixa de controle.
+        const url = /\[string\] \$TraceUrl = '([^']+)'/.exec(fonteDe("Verifica-Tunel.ps1"))[1];
+        const host = new URL(url).hostname;
+        const { FAIXA_CONTROLE } = require("../streamFix/tunnel/perfil.ts");
+        assert.ok(FAIXA_CONTROLE.split(",").map(s => s.trim()).includes(`${host}/32`),
+            `${host} nao esta na faixa de controle`);
+    });
+
+    test("com o controle no ar, o Verifica nao toma o IP de casa pela saida", () => {
+        // O "endereco externo" do status, com o controle de pe, e o de casa. Usa-lo como saida
+        // faria o teste negativo acusar a maquina inteira no tunel toda vez.
+        const v = semComentario(fonteDe("Verifica-Tunel.ps1"));
+        assert.match(v, /if \(\$noControle\) \{\s*\$ExitHost = Get-ExitHostFromProfile/);
+        const fn = /function Get-ExitHostFromProfile\([\s\S]*?\n\}/.exec(v)[0];
+        assert.match(fn.slice(fn.indexOf("finally")), /Remove-Item -LiteralPath \$dir -Recurse/,
+            "o perfil exportado tem a chave e precisa morrer");
+    });
+
+    test("os scripts compilam, e as funcoes puras do instalador fazem o que dizem", {
+        skip: process.platform !== "win32" && "so ha Windows PowerShell no Windows"
+    }, () => {
+        // Os testes acima leem texto; este executa. Ele existe porque dois defeitos passaram
+        // por todos eles em 12/09: `"perfil $controle: ..."`, que o PowerShell le como variavel
+        // com escopo e recusa o arquivo INTEIRO, e um DNS duplicado em todo perfil derivado.
+        // Carrega so as funcoes, pela arvore sintatica: o instalador nao roda.
+        const { execFileSync } = require("node:child_process");
+        const pasta = join(RAIZ, "installer").replace(/'/g, "''");
+        const script = `
+$ErrorActionPreference = 'Stop'
+$erros = 0
+foreach ($f in Get-ChildItem -LiteralPath '${pasta}' -Filter *.ps1) {
+    $e = $null
+    $null = [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref] $null, [ref] $e)
+    foreach ($x in $e) { $erros++; "SINTAXE $($f.Name):$($x.Extent.StartLineNumber) $($x.Message)" }
+}
+$ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path '${pasta}' 'StreamFix-Installer.ps1'), [ref] $null, [ref] $null)
+foreach ($d in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+    if (@('Test-ProfileName', 'Test-SameRoute', 'Set-ProfileRoute') -contains $d.Name) { . ([scriptblock]::Create($d.Extent.Text)) }
+}
+function Confere($ok, $o) { if (-not $ok) { $script:erros++; "FALHA $o" } }
+Confere (-not (Test-ProfileName 'perfil streamfix-santiago-controle' 'streamfix-santiago')) 'nome contido'
+Confere (Test-ProfileName "perfil streamfix-santiago\`r\`n" 'streamfix-santiago') 'nome com CR'
+Confere (-not (Test-ProfileName 'perfil axb' 'a.b')) 'ponto literal'
+Confere (Test-SameRoute '162.159.128.0/17,1.1.1.1/32' '162.159.128.0/17, 1.1.1.1/32') 'rota do log'
+$r = Set-ProfileRoute @('[Interface]', 'Address = 10.8.0.2/32', 'DNS = 1.1.1.1', '[Peer]', 'AllowedIPs = 0.0.0.0/0') 'X'
+Confere (@($r | Where-Object { $_ -match '^DNS' }).Count -eq 1) 'DNS duplicado'
+Confere (@($r | Where-Object { $_ -eq 'AllowedIPs = X' }).Count -eq 1) 'rota reescrita'
+$r = Set-ProfileRoute @('Address = 10.8.0.2/32', 'AllowedIPs = 10.8.0.0/24') 'X'
+Confere ($r[1] -eq 'DNS = 1.1.1.1') 'DNS que faltava entra depois do Address'
+"erros=$erros"`;
+        const saida = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script],
+            { encoding: "utf8", timeout: 60000 });
+        assert.match(saida, /erros=0\s*$/, saida);
     });
 
     test("a lista do provisionador e o fecho dos imports, senao nada resolve na maquina de quem instala", () => {

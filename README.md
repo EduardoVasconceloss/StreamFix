@@ -74,7 +74,7 @@ Nas settings do plugin:
 
 - **Endereço da saída**. O `host:porta` da sua saída. É contra ele que o plugin confere o que o Discord reporta, então um valor errado aqui recusa transmissão boa. O instalador preenche com o que a saída respondeu.
 
-- **Túnel permanente** (padrão: ligado). Deixa o túnel de pé o tempo todo. Ligado é o certo para quem transmite: subir e descer o túnel no meio de uma call é o que derruba conexão do Discord. **Se você só assiste**, desligue — aí o túnel sobe só quando você entra numa transmissão e cai dez segundos depois, e o resto da sua call fica na latência normal.
+- **Túnel completo sempre** (padrão: desligado). Faz o Discord inteiro passar pelo túnel o tempo todo, como nas versões antigas. A call vai de ~35 ms para ~130 ms. Ligue só se o túnel em dois níveis (ver [Uso](#uso)) der problema para você.
 
 - **Voice region** / **Stream region**. Preferência de região, não ordem — o Discord pode ignorar. Padrão: `Automatic`.
 
@@ -85,13 +85,24 @@ Nas settings do plugin:
 
 ## Uso
 
-1. Abra o Discord. Se **Túnel permanente** está ligado, o túnel sobe junto.
-2. Entre na call e use Go Live ou a câmera.
-3. Para **assistir** a transmissão de alguém, é só clicar. Se o túnel não estiver de pé, o plugin avisa, sobe ele e te coloca lá — um clique a mais, nenhuma espera longa.
+1. Abra o Discord. O plugin põe o túnel leve no ar sozinho.
+2. Entre na call e use Go Live ou a câmera. O clique do Go Live espera ~2 s enquanto o túnel completo sobe.
+3. Para **assistir** a transmissão de alguém, é só clicar. O plugin avisa, põe o túnel completo no ar e te coloca lá — um clique, uns segundos de espera.
+
+**O túnel tem dois níveis.** O normal é o **leve**: leva só a conexão de controle do Discord (gateway e API), que é o que o Discord olha para decidir se você está no Brasil. Voz, câmera e transmissão saem direto, na latência de sempre. O Discord só confere o endereço da mídia no instante em que uma conexão de mídia nasce — ao entrar na call, ao começar um Go Live, ao entrar numa transmissão. Nesses instantes o plugin põe o túnel **completo** no ar, por uns segundos, e depois volta ao leve. Quem já estava transmitindo ou assistindo continua, porque o veredito já foi dado.
+
+Se a voz nascer fora do túnel (a troca perdeu a corrida contra a entrada na call), o plugin reconecta a voz uma vez, sem você sair do canal: ~0,7 s sem som.
 
 **Enquanto você transmite, o plugin vigia.** Se a entrega morrer, ele avisa que a transmissão precisa ser recriada — e distingue isso de o problema ser local (a captura de tela parou), que é o caso em que recriar não adianta.
 
-**O custo.** A call inteira passa a ~80 ms em vez dos ~35 ms diretos, porque o túnel leva o processo do Discord inteiro, não só a transmissão. É perceptível e é o preço de funcionar.
+**O custo**, medido em 12 de setembro de 2026:
+
+| quando | o que você sente |
+|---|---|
+| a call, fora dos cliques | ~35 ms, a mesma latência de sem túnel (medido: 31 a 38 ms) |
+| ao clicar em Go Live ou em assistir, com a call no ar | uma travada de ~200 ms na voz, na ida para o completo; nada na volta |
+| ao entrar na call | nada, na maioria das vezes; quando a corrida é perdida, ~0,7 s sem voz |
+| com **Túnel completo sempre** ligado | ~130 ms a call inteira, como nas versões antigas |
 
 ---
 
@@ -99,7 +110,7 @@ Nas settings do plugin:
 
 Duas metades, medidas de lugares diferentes de propósito.
 
-**A mídia sai pela saída?** No Discord, entre numa call e digite `/streamfix`. Na seção `== tunel ==`, o campo **"o Discord diz"** tem que ser o endereço da sua saída. Essa leitura vem de dentro do motor de mídia, que é a única que não mente.
+**A mídia sai pela saída?** No Discord, entre numa call e digite `/streamfix`. Na seção `== tunel ==`, o modo tem que ser **dois níveis**, e o campo **"o Discord diz"** tem que ser o endereço da sua saída: é por onde a sua voz nasceu, lido de dentro do motor de mídia, que é a única leitura que não mente. No fim, **"o que o túnel fez"** mostra cada troca e por onde cada conexão nasceu.
 
 **O resto da máquina continua saindo pelo seu IP?** Rode:
 
@@ -119,7 +130,15 @@ Ele confere que um processo que **não** é o Discord continua saindo pelo seu I
 
 **"A mídia está saindo por X, e não pela saída Y"** ao clicar em Go Live. O túnel não está carregando a mídia. Confira com `/streamfix`; se o WireSock disser "conectado" e o Discord disser outro endereço, reinstale o perfil.
 
-**"O túnel do StreamFix não está de pé."** O plugin tenta subir sozinho em segundo plano. Clique de novo em alguns segundos.
+**"O StreamFix não conseguiu pôr o túnel no ar"** ao clicar em Go Live. O motivo vem escrito depois dos dois pontos. Veja se a saída está no ar e se o seu perfil ainda existe (`wiresock-connect-cli list`).
+
+**"Sua transmissão nasceu fora do túnel."** Quem assiste vai ver tela preta, e trocar o túnel agora não conserta. Pare e comece de novo.
+
+**"A voz desta call nasceu fora do túnel, e a câmera pode não funcionar."** O plugin já tentou reconectar a voz uma vez. Saia da call e entre de novo.
+
+**"O túnel leve não cobriu a conexão do Discord daqui."** A sua rede manda o Discord por um caminho que o túnel leve não leva. O plugin passa para o completo e recarrega o Discord uma vez, sozinho. Se o aviso voltar toda vez que você abre o Discord, ligue **Túnel completo sempre** e abra uma issue com o `/streamfix`.
+
+**O `/streamfix` diz "o de controle não existe".** O plugin foi atualizado, mas o instalador não rodou de novo. Funciona do jeito antigo, com a call a ~130 ms. Rode o instalador de novo — não precisa de convite — para ganhar o túnel leve.
 
 **"Não consegui subir o túnel"** ao entrar numa transmissão. O WireSock não conectou. Veja se a saída está no ar e se o seu perfil ainda existe (`wiresock-connect-cli list`).
 
@@ -170,6 +189,12 @@ E por que **split tunnel**: mandar a máquina inteira por uma VPS resolveria e c
 
 A proxy de gateway, o roteamento SOCKS, o PAC, a lista de proxies públicas e a saída pelo Tor. Com eles morreu também o defeito de privacidade que o projeto carregava: não há mais um desconhecido no meio do seu gateway, porque não há mais terceiro. Quem vê o seu tráfego agora é quem opera a saída — que é você, ou alguém que você escolheu.
 
+### O túnel em dois níveis
+
+Até a versão 2.2, o túnel levava o Discord inteiro o tempo todo, e a call pagava a latência do Chile. Três rodadas de medição, em 11 e 12 de setembro de 2026, mostraram que o Discord confere o seu endereço em momentos certos, e só neles: a Trava 1 pelo endereço do gateway, a cada conexão; a câmera, pelo endereço da conexão de voz quando ela nasce; a transmissão e quem assiste, pelo endereço da conexão de stream quando ela nasce. Fora desses instantes, ninguém precisa da mídia no túnel.
+
+Daí os dois perfis, gerados da mesma chave: o **leve** leva só `162.159.128.0/17` (onde estão o gateway, a API e a sinalização de voz) e o DNS; o **completo** leva tudo. Trocar de um para o outro não derruba o gateway, porque os dois saem pelo mesmo endereço. Se um dia o gateway de alguém cair fora dessa faixa, a Trava 1 volta — e o plugin confere a trava depois de cada conexão, passa para o completo e recarrega o Discord uma vez.
+
 ### Como se sabe que funciona
 
 Medido em 11 de setembro de 2026, com o túnel de pé:
@@ -187,7 +212,7 @@ O split tunnel faz o que promete. O `Verifica-Tunel.ps1` roda a segunda metade d
 
 - **Quem opera a saída vê o seu tráfego do Discord.** Menos do que parece, porque vai dentro de TLS, mas é real. Aceite um convite de quem você confiaria com isso.
 - **Usar clientes modificados viola os Termos de Serviço do Discord.** Contornar a restrição de região também pode violar. O risco de punição é baixo, mas existe. Considere uma conta secundária.
-- **O túnel leva o processo do Discord inteiro**, não só a transmissão — é o que o WireSock sabe separar. Então a sua call inteira paga a latência da saída.
+- **Nos instantes em que o túnel completo está no ar, ele leva o processo do Discord inteiro**, não só a transmissão — é o que o WireSock sabe separar. Fora deles, só a conexão de controle passa pela saída.
 - **Só Windows por enquanto.** Linux e macOS voltam quando o túnel ganhar uma implementação com `wg-quick`.
 - O plugin **não te deixa sem Discord**. Se a verificação dele falhar por qualquer motivo, ele libera e avisa, em vez de travar a transmissão.
 
@@ -197,13 +222,17 @@ O split tunnel faz o que promete. O `Verifica-Tunel.ps1` roda a segunda metade d
 
 ```
 streamFix/
-├── index.tsx                      # renderer: o porteiro do Go Live, o fluxo de assistir,
-│                                  #   o monitor, o seletor de região, o /streamfix
+├── index.tsx                      # renderer: a troca entre os dois níveis do túnel, o porteiro
+│                                  #   do Go Live, a voz, o fluxo de assistir, o monitor,
+│                                  #   o seletor de região, o /streamfix
 ├── native.ts                      # processo principal: ponte fina para o WireSock
 └── tunnel/
     ├── porteiro.ts                # decide se a transmissão vale a pena subir
     ├── entrada.ts                 # decide o que fazer ao entrar numa transmissão alheia
-    ├── controle.ts                # sobe e derruba o túnel, e confere que subiu só o Discord
+    ├── emprestimos.ts             # conta quem pediu o túnel completo, e quando ele pode voltar
+    ├── voz.ts                     # confere por onde a voz nasceu, e a resgata se nasceu fora
+    ├── trava.ts                   # lê a Trava 1 do servidor, e decide o que fazer se ela vier
+    ├── controle.ts                # troca o perfil no ar, e confere que subiu só o Discord
     ├── perfil.ts                  # gera o .conf e mede o MTU do caminho
     ├── coletor.ts                 # traduz o que o Discord reporta em amostras
     ├── monitor.ts                 # decide se a transmissão está viva pelas amostras
@@ -249,7 +278,7 @@ Measured on 2026-09-11, tunnel up: Discord reported `159.112.151.37` (Santiago) 
 - Desktop Discord with Equicord or Vencord injected. Vesktop and Equibop are not supported by the installers, since they bundle the mod instead of loading it from a checkout.
 - The installer does everything in one pass: installs WireSock if missing, measures your path MTU, trades the invite for an address on the exit, writes the profile, builds and injects. The tunnel is set up **before** the plugin is enabled, so an interrupted install leaves you with no plugin rather than a plugin that looks ready and is not.
 - The installer does not self-elevate. Measured: every WireSock CLI operation it needs works unelevated; only installing WireSock requires admin, and winget raises that prompt itself.
-- The whole Discord process goes through the tunnel, so your call pays the exit's latency (~80 ms vs ~35 ms direct). If you only ever watch, turn off **Túnel permanente** and the tunnel comes up only while you join a stream.
+- The tunnel has two levels. Normally it carries only Discord's control connection (gateway and API, `162.159.128.0/17`), which is what Discord checks to decide you are in Brazil; voice, camera and streams go direct at ~35 ms. Discord checks the media address only when a media connection is born — joining a call, starting Go Live, joining a stream — so the plugin brings up the full tunnel for those few seconds and then drops back. Measured on 2026-09-12. **Túnel completo sempre** restores the old always-full behaviour (~130 ms calls).
 - Whoever runs the exit can see your Discord traffic. Accept an invite from someone you would trust with that.
 - Using modified clients violates Discord's ToS, and bypassing the region restriction may as well. Use at your own risk.
 - It cannot leave you unable to stream: if the plugin's own check fails for any reason, it allows the stream and warns, rather than blocking.

@@ -9,7 +9,7 @@
 import { execFile } from "child_process";
 import type { IpcMainInvokeEvent } from "electron";
 
-import { controleWireSock, EstadoTunel, Resultado } from "./tunnel/controle";
+import { controleWireSock, Resultado } from "./tunnel/controle";
 
 /**
  * Executa e devolve a saida combinada.
@@ -38,14 +38,18 @@ function executar(exe: string, args: string[], { tempoLimiteMs }: { tempoLimiteM
 
 const controle = controleWireSock({ executar });
 
-export function estadoDoTunel(_e: IpcMainInvokeEvent, perfil: string): Promise<EstadoTunel> {
-    return controle.estado(perfil);
+// O plugin nunca derruba o tunel sem por outro no lugar: o nivel mais baixo e o controle, e
+// sair do controle sem nada em cima traria a Trava 1 na proxima conexao do gateway. Por isso
+// nao ha `derrubar` aqui, so `trocar`.
+
+export function trocarTunel(_e: IpcMainInvokeEvent, perfil: string): Promise<Resultado & { duracaoMs: number }> {
+    return controle.trocar(perfil);
 }
 
-export function subirTunel(_e: IpcMainInvokeEvent, perfil: string): Promise<Resultado> {
-    return controle.subir(perfil);
+export function perfilAtivo(_e: IpcMainInvokeEvent, candidatos: string[]): Promise<string | null | "desconhecido"> {
+    return controle.perfilAtivo(candidatos);
 }
 
-export function derrubarTunel(_e: IpcMainInvokeEvent): Promise<void> {
-    return controle.derrubar();
+export function perfilExiste(_e: IpcMainInvokeEvent, perfil: string): Promise<boolean> {
+    return controle.existe(perfil);
 }

@@ -40,6 +40,20 @@ export function hostDoEndpoint(endpoint: string | null | undefined): string | nu
 }
 
 /**
+ * O id de quem transmite, tirado da chave do stream.
+ *
+ * A chave e `guild:<servidor>:<canal>:<usuario>` numa call de servidor e `call:<canal>:<usuario>`
+ * numa de DM; quem transmite e sempre o ultimo pedaco. O `includes(meuId)` de antes aceitava
+ * uma transmissao alheia num servidor ou canal cujo id contivesse o nosso.
+ */
+export function donoDoStream(streamKey: string | null | undefined): string | null {
+    if (typeof streamKey !== "string") return null;
+    const partes = streamKey.split(":");
+    const dono = partes.length >= 3 ? partes[partes.length - 1] : "";
+    return /^\d+$/.test(dono) ? dono : null;
+}
+
+/**
  * Decide.
  *
  * **A leitura do Discord vale como negativa, nao como positiva.** Se ela diz que a midia sai
@@ -107,6 +121,78 @@ export function decidir(s: Situacao): Veredito {
                     + " Confira se o StreamFix foi instalado por completo."
             };
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// O tunel em dois niveis (spec de 2026-09-11, 4.4)
+// ---------------------------------------------------------------------------------------------
+
+/** O que o clique do Go Live sabe depois de pedir o completo e esperar a troca. */
+export interface Clique {
+    exigirTunel: boolean;
+    /** O tunel em dois niveis vale agora. Fora dele, e a regra de `decidir` que manda. */
+    doisNiveis: boolean;
+    /** O resultado da troca: se deu certo, e se o que ficou no ar e o completo. */
+    troca: { ok: boolean; completo: boolean; motivo: string | null; };
+    /** O `localAddress` da voz. So conta no completo sempre. */
+    localAddress: string | null;
+    saidaEsperada: string | null;
+}
+
+/**
+ * Decide o clique do Go Live.
+ *
+ * **Em dois niveis, a voz nao diz nada sobre o Go Live.** A regra de `decidir` usa o
+ * `localAddress` da voz como negativa, e isso so fazia sentido com o tunel levando tudo o tempo
+ * todo: voz e stream saiam pelo mesmo caminho. Agora a voz anda no controle a maior parte do
+ * tempo, a transmissao anda na conexao de stream, que e outra e ainda vai nascer, e quem cuida da
+ * voz e a unidade `voz`. O que decide e a troca para o completo ter dado certo; o que confere e
+ * `conferirNascimento`, logo depois.
+ *
+ * No completo sempre, a regra de antes continua valendo inteira.
+ */
+export function decidirClique(c: Clique): Veredito {
+    if (!c.exigirTunel) return { ok: true, nota: "porteiro desligado nas configuracoes" };
+
+    if (!c.troca.ok || !c.troca.completo) {
+        return {
+            ok: false,
+            motivo: `O StreamFix nao conseguiu por o tunel no ar: ${c.troca.motivo ?? "motivo desconhecido"}.`
+                + " Sem ele o Discord nega a transmissao para quem esta no Brasil."
+        };
+    }
+
+    if (c.doisNiveis) return { ok: true, nota: null };
+
+    // A troca so e feita pelo `controle`, que confere o `status`: "conectado" e o que ela provou.
+    return decidir({
+        tunel: "conectado",
+        localAddress: c.localAddress,
+        saidaEsperada: c.saidaEsperada,
+        exigirTunel: true
+    });
+}
+
+export const AVISO_STREAM_FORA =
+    "StreamFix: sua transmissao nasceu fora do tunel, e quem assiste vai ver tela preta."
+    + " Pare e comece de novo.";
+
+/**
+ * Confere por onde a transmissao nasceu, lendo o `localAddress` da conexao de stream no
+ * `RTC_CONNECTED`.
+ *
+ * Nesse instante ele e exato: e o IP que o servidor de midia viu no nascimento, e e ali que o
+ * Discord decide (pesquisa, 12g). O envelhecimento que obriga `decidir` a desconfiar dele so
+ * acontece depois. Nascida fora, a transmissao esta condenada, e trocar o tunel agora nao
+ * adianta (fato 6): so recria-la resolve.
+ *
+ * `null` quando nao ha o que dizer, inclusive quando nao deu para ler. Sem leitura, avisar seria
+ * chute, e alarme falso ensina a ignorar o aviso.
+ */
+export function conferirNascimento(localAddress: string | null | undefined, saidaEsperada: string | null): string | null {
+    if (saidaEsperada === null) return null;
+    if (typeof localAddress !== "string" || localAddress.length === 0) return null;
+    return localAddress === saidaEsperada ? null : AVISO_STREAM_FORA;
 }
 
 /**

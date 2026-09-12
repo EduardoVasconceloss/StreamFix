@@ -3,8 +3,7 @@ const { test } = require("node:test");
 
 const {
     decidirEntrada,
-    deveDerrubarDepois,
-    PRAZO_ATE_DERRUBAR_MS
+    PRAZO_ATE_DEVOLVER_MS
 } = require("../streamFix/tunnel/entrada.ts");
 
 const BASE = { exigirTunel: true, tunel: "fora", jaTentou: false, preparando: false };
@@ -117,21 +116,10 @@ test("nunca pede um segundo tunel enquanto um ja esta subindo", () => {
     }
 });
 
-test("o tunel que nos subimos para entrar cai depois", () => {
-    assert.equal(deveDerrubarDepois({ subimosParaEntrar: true, transmitindo: false }), true);
-});
+// Quem decide quando o completo cai deixou de ser esta unidade: a entrada pega um emprestimo e
+// o devolve depois do prazo, e o contador (emprestimos.ts) so volta ao controle quando ninguem
+// mais precisa -- que e o que `deveDerrubarDepois` fazia com duas guardas.
 
-test("o tunel que ja estava de pe nao e nosso para derrubar", () => {
-    // D9: em quem transmite o tunel e permanente. A entrada nao pode derrubar o tunel alheio.
-    assert.equal(deveDerrubarDepois({ subimosParaEntrar: false, transmitindo: false }), false);
-});
-
-test("nunca derruba enquanto estamos transmitindo", () => {
-    // Rede de seguranca: derrubar aqui mataria a entrega que o porteiro acabou de garantir.
-    assert.equal(deveDerrubarDepois({ subimosParaEntrar: true, transmitindo: true }), false);
-    assert.equal(deveDerrubarDepois({ subimosParaEntrar: false, transmitindo: true }), false);
-});
-
-test("o prazo e de dez segundos", () => {
-    assert.equal(PRAZO_ATE_DERRUBAR_MS, 10_000);
+test("o prazo ate devolver e de dez segundos", () => {
+    assert.equal(PRAZO_ATE_DEVOLVER_MS, 10_000);
 });

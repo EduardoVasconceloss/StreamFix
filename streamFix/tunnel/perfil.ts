@@ -52,6 +52,32 @@ export interface DadosPerfil {
     keepalive?: number;
 }
 
+/**
+ * O que o perfil de controle carrega: o gateway, a API, a CDN e a sinalizacao de voz do Discord,
+ * mais o DNS do perfil. So isso.
+ *
+ * Medido daqui em 11/09 (pesquisa, 12h): gateway, `discord.com`, CDN, `media.discordapp.net` e
+ * `c-gru13-*.discord.media` resolvem todos para `162.159.128.0/17`, da Cloudflare. Com so esta
+ * faixa no tunel, o servidor nao manda a Trava 1 e a midia sai direta, a ~35 ms.
+ *
+ * E uma lista do que ENTRA, e nao do que fica fora, de proposito. Se ela ficar curta em algum
+ * lugar, o sintoma e "a Trava 1 voltou", que o plugin detecta pela atribuicao do servidor. Uma
+ * lista do que fica fora, curta, apareceria como transmissao preta -- a falha silenciosa que o
+ * projeto existe para evitar.
+ */
+export const FAIXA_CONTROLE = "162.159.128.0/17, 1.1.1.1/32";
+
+/**
+ * O nome do perfil de controle, a partir do completo: mesma chave, mesmo peer, so a
+ * `FAIXA_CONTROLE` no `AllowedIPs`.
+ *
+ * O WireSock nomeia o perfil pelo nome do arquivo, e o plugin procura o perfil por este nome.
+ * Os dois lados tem de concordar aqui, e o instalador espelha a regra (teste de drift).
+ */
+export function perfilDeControle(perfil: string): string {
+    return `${perfil}-controle`;
+}
+
 /** Campos que entram no texto sem aspas: um `\n` aqui injetaria diretiva no perfil. */
 const SEGURO = /^[A-Za-z0-9+/=:._\-,[\]]+$/;
 

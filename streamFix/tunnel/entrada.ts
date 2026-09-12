@@ -18,19 +18,23 @@
 export type EstadoTunel = "conectado" | "fora" | "desconhecido";
 
 /**
- * Quanto tempo o tunel fica de pe depois de a entrada acontecer.
+ * Quanto tempo o emprestimo do completo dura depois de a entrada acontecer.
  *
- * Por 12e a autorizacao de quem assiste **sobrevive** a queda do tunel: medido com o espectador
- * voltando a IP brasileiro e a entrega seguindo por mais de dois minutos a 60 fps. Dez segundos
- * e folga larga sobre os ~800 ms de conexao do tunel, e errar para mais aqui custa alguns
- * segundos de latencia e nada mais.
+ * Por 12e a autorizacao de quem assiste **sobrevive** a volta ao controle: medido com o
+ * espectador voltando a IP brasileiro e a entrega seguindo por mais de dois minutos a 60 fps. O
+ * que precisa do completo e so o nascimento da conexao de stream, logo depois da entrada. Dez
+ * segundos e folga larga sobre isso, e errar para mais aqui custa alguns segundos de latencia e
+ * nada mais.
  */
-export const PRAZO_ATE_DERRUBAR_MS = 10_000;
+export const PRAZO_ATE_DEVOLVER_MS = 10_000;
 
 export interface SituacaoDaEntrada {
     /** O porteiro pode ser desligado por quem sabe o que esta fazendo. */
     exigirTunel: boolean;
-    /** O ultimo estado conhecido do tunel. Cache, porque o gancho e sincrono e nao pode esperar. */
+    /**
+     * O ultimo estado conhecido do tunel **completo**: com o controle no ar, e `fora`. Cache,
+     * porque o gancho e sincrono e nao pode esperar.
+     */
     tunel: EstadoTunel;
     /** Se esta chamada ja e a repeticao de uma tentativa que abortou. */
     jaTentou: boolean;
@@ -80,16 +84,4 @@ export function decidirEntrada(s: SituacaoDaEntrada): DecisaoDeEntrada {
         prepararTunel: true,
         aviso: "StreamFix esta subindo o tunel para voce assistir. Ja te coloco la."
     };
-}
-
-/**
- * Se o tunel que subimos para esta entrada deve cair depois do prazo.
- *
- * **Duas guardas, e as duas importam.** `subimosParaEntrar` protege o tunel permanente de quem
- * transmite (D9): se ele ja estava de pe, a entrada nao e dona dele e nao pode derruba-lo.
- * `transmitindo` e a rede de seguranca -- derrubar o tunel no meio de uma transmissao nossa
- * mataria a entrega que o porteiro acabou de garantir.
- */
-export function deveDerrubarDepois(s: { subimosParaEntrar: boolean; transmitindo: boolean; }): boolean {
-    return s.subimosParaEntrar && !s.transmitindo;
 }
