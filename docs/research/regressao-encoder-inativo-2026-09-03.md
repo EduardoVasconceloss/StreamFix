@@ -723,6 +723,263 @@ A hipótese incômoda seria o Discord degradando a qualidade por causa de um rec
 usuário, e tela parada codifica barato. Registrado porque a leitura errada teria mudado o que
 se conta às pessoas sobre o custo de ter alguém negado na sala.
 
+## 12g. Espectador novo entra com quem transmite já fora do túnel
+
+Teste de 11/09/2026, noite. Fecha a lacuna que sobrava no modelo: nos 16 minutos do fato 2 e
+nos 15 minutos de 12e, o espectador **já estava dentro** quando o túnel de quem transmite
+caiu. Ninguém tinha entrado depois da queda.
+
+### Montagem
+
+- **Emissor**: Windows, conta `dudiss1`, StreamFix ligado, túnel `streamfix-santiago`. A
+  transmissão nasceu com o túnel de pé (`localAddress` na saída, ping 130 ms).
+- **Espectador**: WSL2, conta `dudivis1`, StreamFix desligado, túnel próprio pelo `wg1`.
+  Entrou na call só com a conexão de voz, sem abrir a transmissão.
+- Leitura pelos dois lados por CDP em `127.0.0.1` (9222 no Windows, 9223 no WSL2). A entrada
+  é feita chamando a própria `Nl` do módulo de streaming, a mesma do botão "Assistir".
+
+### O resultado
+
+| hora | emissor sai por | espectador sai por | conexão de vídeo | recebido em 30–45 s |
+|---|---|---|---|---|
+| 22:46:39 | túnel derrubado → **BR** (ping 130 → 33 ms) | CL | — | — |
+| 22:47:35 | BR | CL | **nova** (só havia a de voz) | 60 fps, 1920 px, 2.568 quadros |
+| 22:51:53 | BR | **BR** | nova (saiu da call antes) | **0 quadros, 0 bytes** |
+| 22:53:18 | BR | CL | nova (saiu da call antes) | 60 fps, 1.663 quadros em 30 s |
+
+O emissor ficou fora do túnel das 22:46:39 até o fim, conferido pelo `status` do WireSock e
+pelo ping da conexão de transmissão (33 ms, direto para `c-gru13`). O encoder seguiu rodando
+e a transmissão não caiu em momento nenhum.
+
+**Conclusão: o IP de quem transmite não é reconferido quando alguém entra.** Ele só conta quando
+a transmissão nasce. Depois disso, quem entra depende apenas do próprio IP: a linha de 22:51
+mostra que o gate estava ativo naquela mesma transmissão, e a de 22:53 que a recusa não a
+estragou.
+
+### Uma armadilha de medição
+
+**"Parar de assistir" não fecha a conexão de vídeo.** Depois do `STREAM_CLOSE` a store diz que
+não há transmissão ativa, e a conexão `stream` continua `CONNECTED`, decodificando a 60 fps,
+por tempo indeterminado. Uma reentrada feita assim reaproveita a conexão antiga, e com isso a
+autorização antiga. A primeira tentativa de controle negativo desta série caiu nessa armadilha
+e mostrou vídeo sem túnel. Só vale como entrada nova aquela em que não existe conexão `stream`
+antes do clique. Aqui isso foi garantido tirando o espectador da call e esperando o motor de
+mídia ficar sem conexões (até 21,5 s).
+
+### Consequência de produto
+
+Com 12e, os dois lados precisam do túnel só por segundos: quem transmite, no nascimento da
+transmissão; quem assiste, na entrada. Ninguém precisa pagar latência na call inteira, nem o
+vídeo. O que ainda falta saber para desenhar isso é a seção 13, "o que ainda não foi medido".
+
+## 12h. A Trava 1 é decidida pelo IP do gateway, e só dele
+
+Teste de 11/09/2026, noite, logo depois de 12g. Só no Windows, conta `dudiss1`.
+
+### Onde a trava mora
+
+É o experimento Apex `2026-08-video-guard` (`kind: "user"`, variantes 1 e 2 com
+`videoEnabled: false`), no módulo que também exporta o link da carta do Discord ao Brasil. O
+servidor manda a avaliação dentro do `READY`; o cliente só aplica. Quem lê o resultado:
+`handleScreenshareUnavailable` (a caixa "Compartilhamento de tela indisponível"), o botão de
+câmera, o banner `VideoGuardBannerManager` e o próprio motor de mídia.
+
+Leitura direta: `ApexExperimentStore.getServerAssignment("user", <id>, "2026-08-video-guard")`.
+
+**A caixa tem dois caminhos com o mesmo título.** Com a trava, ela traz o link da carta. Sem a
+trava, ela pode aparecer mesmo assim, com outro texto, por outro motivo. Quem relatar "indisponível"
+precisa dizer qual das duas viu.
+
+### O resultado
+
+Cada linha é uma recarga do Discord do zero (`READY` novo), com `tunelPermanente` desligado
+para o plugin não religar o túnel sozinho.
+
+| perfil | o que passa pelo túnel | atribuição do servidor | ping da voz |
+|---|---|---|---|
+| `streamfix-santiago` (antes do teste) | todo o Discord | vazia → trava desligada | ~130 ms |
+| nenhum | nada | **variante 2 → trava ligada** | — |
+| `streamfix-controle` | só `162.159.128.0/17` e `1.1.1.1` | **vazia → trava desligada** | **32 ms**, `localAddress` brasileiro |
+
+`162.159.128.0/17` é a faixa da Cloudflare onde estão o gateway, a API, a CDN e a sinalização
+de voz (`c-gru13-*.discord.media` resolve para lá). O UDP da mídia vai para outro lugar: com o
+perfil de controle a VPS contou ~9 KB entrando em 20 s de call, que é só o gateway.
+
+**Conclusão: basta o gateway sair de fora do Brasil para o servidor não mandar a trava.** A mídia
+pode ir direta.
+
+### Trocar de perfil não derruba o gateway
+
+Com a call no ar, o websocket do gateway foi marcado e o perfil trocado de "só controle" para
+"tudo" e de volta. Cada troca levou 1,2 s. O mesmo websocket continuou aberto nos dois sentidos,
+sem nenhum `CONNECTION_OPEN` nem `CONNECTION_RESUMED`, e passou de um ciclo de heartbeat
+depois da troca. A voz foi de 37 para 136 e voltou para 42 ms. Faz sentido: os dois perfis
+usam o mesmo endereço de túnel e a mesma saída, então o servidor vê a conexão TCP vindo do
+mesmo IP de antes.
+
+### Um confundidor no Windows do teste
+
+**O cliente tinha um override manual do experimento** (`clientOverrides`, variante -1), gravado
+pelo plugin Experiments do Equicord. Por isso o botão aparecia até sem túnel. Ele esconde a
+trava só na tela: o servidor continua mandando a variante 2, e a entrega continua sendo
+recusada pelo gate. As leituras acima são da atribuição **do servidor**, que o override não
+toca.
+
+### Consequência de produto
+
+O desenho que sai de 12g e 12h:
+
+- **Sempre ligado:** um túnel só com o controle. Libera a Trava 1 e custa só a latência do
+  gateway, que ninguém sente.
+- **Por segundos:** o túnel completo, no clique de Go Live e na entrada numa transmissão.
+  Depois ele volta para o de controle, sem derrubar o gateway.
+- **Resultado:** voz e vídeo diretos, a ~35 ms, fora os segundos da troca. A VPS deixa de
+  carregar vídeo.
+
+## 12i. A câmera, a folga depois do nascimento e o soluço da troca
+
+Teste de 12/09/2026, madrugada: a fase 0 de
+`docs/superpowers/plans/2026-09-11-tunel-em-dois-niveis-plan.md`. Mesma montagem de 12g, com
+estes detalhes:
+
+- **Windows**, conta `dudiss1`, com o StreamFix. No WireSock, os perfis `streamfix-santiago`
+  (tudo) e `streamfix-controle` (só `162.159.128.0/17` e `1.1.1.1`). Webcam XWF-1080P, a ~17
+  quadros/s.
+- **WSL2**, conta `dudivis1`, com o StreamFix desligado. WireGuard `wg0` (tudo) e `wgc`, uma
+  cópia do `wg0` com só a faixa de controle.
+
+Trocar `wgc` ↔ `wg0` também não derrubou o gateway do WSL: mesmo websocket, nenhum
+`CONNECTION_OPEN`.
+
+### A câmera: conta o IP da voz, conferido quando a conexão de voz nasce, nos dois lados
+
+A câmera anda na conexão `default`, a da voz. Cada linha abaixo é uma conexão de voz nova: a
+pessoa sai da call, o motor de mídia fica sem conexões e ela entra de novo.
+
+| teste | voz de quem liga a câmera nasceu por | túnel quando a câmera ligou | voz de quem assiste nasceu por | resultado |
+|---|---|---|---|---|
+| A | Brasil (controle, 35 ms) | controle | Chile | **0 quadros codificados**, 98 descartados na fila; quem assiste recebe 0 |
+| positivo | Chile | completo | Chile | 251 codificados; quem assiste decodifica 249 |
+| C | Chile | controle, trocado com a call no ar (ping da voz 38 ms) | Chile | **253 codificados; quem assiste decodifica 254** |
+| B | Brasil | completo, trocado com a call no ar (ping da voz 128 ms) | Chile | **0 codificados**, 202 descartados |
+| D | Chile | completo | Brasil, com o gateway pelo Chile (sem Trava 1) | **quem assiste recebe 0**; quem transmite para de codificar (3 codificados, 317 descartados) |
+| positivo de D | Chile | completo | Chile | quem assiste decodifica 302; 314 codificados, nenhum descartado |
+| estado final | Chile, depois controle | controle | Chile, depois controle | a câmera segue a ~17 q/s, com a voz a 35–36 ms nos dois lados |
+
+Uma rodada foi descartada: com o WSL sem túnel nenhum, o gateway dele reconectou pelo Brasil, o
+servidor mandou a Trava 1 (variante 2) e o cliente nem pediu o vídeo. Não dava para separar a
+Trava 1 do IP da voz. O teste D existe para fazer essa separação.
+
+**Conclusões:**
+
+- **O gate trata a câmera como trata a transmissão.** Ele avalia o IP da conexão de voz
+  **quando ela nasce**. Pôr o túnel depois não conserta (B), e tirar o túnel depois não
+  estraga (C).
+- **Vale para os dois lados.** Quem assiste com a voz nascida no Brasil não recebe a câmera
+  (D), mesmo sem Trava 1 e com a câmera de quem transmite liberada.
+- **Quando o único espectador é recusado, o codificador de quem transmite para.** É o mesmo
+  comportamento do Go Live.
+- **A assinatura é a mesma do Go Live.** `frameRateInput` fica normal, `framesEncoded` fica em
+  0 e `framesDroppedEncoderQueue` cresce.
+
+### A folga depois do nascimento: zero
+
+O roteiro, num processo só, para o tempo ser preciso: trocar para o completo, abrir o Go Live
+pela função que o gancho do StreamFix intercepta (módulo `560595`, fonte `screen:0:0`), esperar
+a conexão `stream` ficar `CONNECTED` (lida a cada 100 ms), aguardar N s e trocar para o
+controle. Um minuto depois do nascimento, o WSL (no completo) entra do zero, sem conexão de
+stream sobrando.
+
+| N | stream `CONNECTED` depois do Go Live | controle no ar depois do `CONNECTED` | quem assiste | quem transmite, depois |
+|---|---|---|---|---|
+| 10 s | 1,8 s | 11,2 s | 60 q/s, 1920 de largura | direto, 33 ms, 60 q/s |
+| 5 s | 1,6 s | 6,3 s | 60 q/s, 1920 | direto, 29 ms, 60 q/s |
+| 2 s | 2,2 s | 3,2 s | 60 q/s, 1920 | direto, 34 ms, 60 q/s |
+| 0 | 1,7 s | 1,3 s (o completo sai em ~0,8 s) | 60 q/s, 1920 | direto, 37 ms, 60 q/s |
+| **negativo:** nasceu no controle | 1,4 s | — | **0 bytes** | codificador parado |
+
+No negativo, o porteiro do StreamFix recusou o Go Live, porque viu o completo fora. Ele foi
+desligado (`exigirTunel`) só naquela rodada.
+
+**A voz também tem folga zero:** com o túnel trocado para o controle logo no `CONNECTED` da
+voz, a câmera ligada em seguida sai direta, a 33 ms, e quem assiste decodifica.
+
+Houve uma rodada por N. Com N = 0 e N = 2 entregando, `FOLGA_NASCIMENTO_MS = 2000` já dá
+margem.
+
+### O soluço da troca de perfil
+
+Dez trocas, alternando os sentidos, com a câmera do Windows ligada e o WSL amostrando os
+quadros recebidos a cada 250 ms. Cada troca levou de 1,23 a 1,34 s, dos quais ~0,77 s são o
+`disconnect`.
+
+| | pior janela de 1 s | intervalo máximo sem quadro novo |
+|---|---|---|
+| linha de base | 15,9 q/s (média 16,6) | 257 ms |
+| trocas para o completo (5) | **13,3 q/s**: uns 3 quadros, ~200 ms | 252 ms |
+| trocas para o controle (5) | 15,9 a 16,0 q/s: nada mensurável | 251 ms |
+
+Ir para o completo acrescenta uns 95 ms ao caminho de uma vez, e é aí que aparece o buraco.
+Voltar ao controle só tira esse atraso. Isso é muito menor que os 0,75–3 s de derrubar e subir
+o túnel inteiro (fase 8 do plano anterior). A medida é do lado de quem troca, olhando o que sai
+dele. O áudio no sentido contrário não foi medido, porque ninguém estava falando, mas o
+caminho é o mesmo.
+
+### O resgate da voz, a corrida e os eventos
+
+Estes testes foram feitos depois da fase 0, para escrever a revisão da spec.
+
+**`reconnect()` renasce a conexão de mídia sem sair do canal.** O método da conexão RTC
+(`RTCConnectionStore.getRTCConnection().reconnect()`) fecha o websocket da voz e abre de novo.
+A conexão `default` é substituída por uma nova em ~0,73 s, e a pessoa continua no canal. O
+`localAddress` da conexão nova reflete o túnel no momento:
+
+| túnel no `reconnect()` | `localAddress` novo | câmera depois |
+|---|---|---|
+| controle | brasileiro, 37 ms | **morta**: 0 codificados, quem assiste recebe 0 |
+| completo | a saída, 133 ms | **volta**: 157 codificados, quem assiste decodifica 247 |
+
+**Com uma transmissão no ar, o `reconnect()` da voz não a derruba.** Quem transmite seguiu
+codificando e quem assiste seguiu a 60 q/s (de 704 para 1281 quadros em ~9 s), atravessando a
+reconexão.
+
+**A corrida.** No controle, disparando a troca para o completo e a entrada na call no mesmo
+instante (três vezes), o completo ficou no ar em ~1,29 s e a voz ficou `CONNECTED` em ~2,5 s,
+já pela saída. A troca ganhou as três. Sem troca nenhuma, a mesma entrada fica `CONNECTED` em
+1,35 s: a troca atrasa a voz, porque a sinalização dela está na faixa de controle e pausa
+durante o `disconnect`.
+
+**A ordem dos eventos** (Discord 1.0.9257):
+
+| | eventos, com o tempo desde o início |
+|---|---|
+| entrada | `VOICE_CHANNEL_SELECT` (0) → `VOICE_SERVER_UPDATE` (640 ms) → `RTC_CONNECTION_STATE` `CONNECTING` → `AUTHENTICATING` → `RTC_CONNECTING` → `RTC_CONNECTED` (1,32 s) |
+| `reconnect()` | `RTC_DISCONNECTED` → `DISCONNECTED` → `CONNECTING` (5 ms) → `AUTHENTICATING` → `RTC_CONNECTING` → `RTC_CONNECTED` (0,7 s) |
+
+Todos com `context: "default"`. Uma reconexão sem clique vai de `CONNECTING` a `RTC_CONNECTED`
+em menos tempo do que uma troca de perfil leva.
+
+**Um `unauthorized` não explicado.** Numa das tentativas, o Go Live foi aceito pelo cliente, e o
+servidor mandou `STREAM_DELETE` com `reason: "unauthorized"` 0,6 s depois do `STREAM_START`. O
+problema sumiu depois de sair e entrar na call, e não voltou em quatro tentativas, nem logo
+depois de um `reconnect()`. O gate do Brasil não recusa assim: com ele, a transmissão nasce e
+fica sem entrega.
+
+### Consequência de produto
+
+- **A voz também precisa nascer no completo**, de todo mundo que liga a câmera ou assiste a
+  uma. A voz nasce a cada entrada numa call, então esse é um terceiro momento de empréstimo, e
+  o mais frequente, além do Go Live e da entrada numa transmissão.
+- **Cuidado com a voz que renasce sem clique.** Uma reconexão (troca de servidor de voz, queda
+  de rede) faz a conexão de voz nascer de novo. Se ela renascer no controle, a câmera morre em
+  silêncio, dos dois lados. O conserto é conferir o `localAddress` no `RTC_CONNECTED` e, se ele
+  for brasileiro, fazer o `reconnect()` com o completo no ar.
+- **A voz não diz nada sobre o Go Live.** A transmissão anda na conexão de stream, que nasce
+  no clique. Quem confere a voz é a unidade `voz` da spec de dois níveis (4.6), e não o
+  porteiro do Go Live.
+- **O custo de cada troca é pequeno:** ~200 ms de travada ao ir para o completo e nada ao
+  voltar.
+
 ## 13. Consequências de produto
 
 > Reescrita em 11/09/2026. A versão anterior listava três direções possíveis e uma pergunta em
@@ -734,6 +991,7 @@ se conta às pessoas sobre o custo de ter alguém negado na sala.
 |---|---|---|
 | IP de quem transmite | quando a sessão de entrega nasce | sobrevive à queda do túnel (fato 2) |
 | IP de quem assiste | quando essa pessoa entra | sobrevive à queda do túnel (12e) |
+| IP da voz, para a câmera (quem liga e quem assiste) | quando a conexão de voz nasce | sobrevive à queda do túnel (12i) |
 
 E a recusa é **individual**: um espectador sem túnel vê o 2012 sozinho, sem afetar quem já
 está assistindo (12f).
@@ -759,11 +1017,21 @@ Isso não elimina o produto; move ele de lugar. O que um túnel de prateleira n�
 O desenho que sai disso está em
 `docs/superpowers/specs/2026-09-11-tunel-nas-duas-pontas-design.md`.
 
-**O que ainda não foi medido**, e que não bloqueia o desenho:
+**O que ainda não foi medido**:
 
-- Se subir o túnel no meio de uma call causa soluço na voz de quem já está conversando.
-- Quais faixas de IP servem cada região de transmissão, necessário para o refinamento de voz
-  direta (seção 7 da spec).
+- ~~Se subir o túnel no meio de uma call causa soluço na voz.~~ Medido em 11/09 (plano, fase
+  8): a conexão não sai de `CONNECTED`; os pacotes param ~0,75 s na queda e até ~3 s na subida.
+- ~~Se o IP de quem transmite é reconferido quando alguém entra.~~ Não é (12g).
+- ~~Em que a Trava 1 se baseia.~~ No IP do gateway na conexão (12h).
+- ~~Se a câmera passa com a voz nascida no Brasil.~~ Não passa, em nenhum dos dois lados
+  (12i).
+- ~~Quanto tempo o túnel precisa ficar depois do nascimento.~~ Nenhum: o que conta é o
+  `CONNECTED` (12i).
+- ~~O soluço da troca de perfil.~~ ~200 ms ao ir para o completo, nada ao voltar (12i).
+- **Uma reconexão de voz de verdade**, sem ser pelo `reconnect()` chamado à mão. Falta
+  conferir que ela passa pelo mesmo `CONNECTING`.
+- **Se a faixa `162.159.128.0/17` cobre o controle em todo lugar.** Medida daqui, com o
+  gateway `us-east1`. Um amigo em outra cidade pode cair em outro host de gateway.
 
 ## Apêndice: como reproduzir a instrumentação
 

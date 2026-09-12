@@ -266,6 +266,10 @@ porque a saída ficou inacessível seria trocar um problema hipotético por um r
 
 ## 7. Refinamento previsto, fora deste escopo
 
+> **Substituído em 11/09/2026** por `2026-09-11-tunel-em-dois-niveis-design.md`, que também
+> substitui a D9. As medições de 12g e 12h mostraram um caminho melhor do que a faixa de IP
+> dos servidores de transmissão descrita abaixo.
+
 Voz direta. Forçar `voiceRegion` no Brasil e `streamRegion` fora, e restringir o túnel por
 `AllowedIPs` à faixa dos servidores de transmissão: a voz fica em ~35 ms e só o vídeo paga o
 desvio. Latência de voz é o que se sente numa conversa; latência de tela compartilhada é muito
