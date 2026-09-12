@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.0](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.2.0...v2.3.0) (2026-09-12)
+
+
+### Features
+
+* tunel em dois niveis, com a call a 35 ms em vez de 130 ([cdf1697](https://github.com/EduardoVasconceloss/StreamFix/commit/cdf1697b80de09f12453d76b6cfde6802300835b))
+
+
+### Bug Fixes
+
+* erro do servico do WireSock virava caixa sobre "EndInvoke" ([38dd080](https://github.com/EduardoVasconceloss/StreamFix/commit/38dd080f225c7f4355b5cf0d0e74a22062e418cb))
+
 ## [2.2.0](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.1.1...v2.2.0) (2026-09-11)
 
 
