@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.1](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.3.0...v2.3.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* depois de reiniciar o PC, o Go Live so voltava reinstalando ([9c29419](https://github.com/EduardoVasconceloss/StreamFix/commit/9c294193c5e89d2af753341ef20eb7436b57d2ed))
+
 ## [2.3.0](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.2.0...v2.3.0) (2026-09-12)
 
 
