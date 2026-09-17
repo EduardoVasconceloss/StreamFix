@@ -88,6 +88,9 @@ $PluginFiles = @(
     'streamFix/native.ts',
     'streamFix/tunnel/coletor.ts',
     'streamFix/tunnel/controle.ts',
+    # O controle do macOS entra aqui mesmo instalando no Windows: o `native.ts` importa os dois e
+    # escolhe por plataforma em tempo de execucao, entao sem este arquivo o plugin nao compila.
+    'streamFix/tunnel/controle-wg.ts',
     'streamFix/tunnel/emprestimos.ts',
     'streamFix/tunnel/entrada.ts',
     'streamFix/tunnel/monitor.ts',
