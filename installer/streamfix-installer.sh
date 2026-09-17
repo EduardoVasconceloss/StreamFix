@@ -20,7 +20,24 @@ set -euo pipefail
 # nao revisado, sem precisar editar isto a cada release -- resolve_repo_raw() consulta a API do
 # GitHub e resolve uma vez por execucao, memoizando o resultado.
 REPO_RAW=""
-PLUGIN_FILES=("streamFix/index.tsx" "streamFix/native.ts")
+# As fases 1 a 6 quebraram o plugin em modulos. Copiar so os dois de cima deixaria um plugin que
+# nem compila -- os imports de ./tunnel/ nao resolveriam. Espelha $PluginFiles do
+# StreamFix-Installer.ps1, e um teste de drift compara as duas listas.
+PLUGIN_FILES=(
+    "streamFix/index.tsx"
+    "streamFix/native.ts"
+    "streamFix/tunnel/coletor.ts"
+    "streamFix/tunnel/controle.ts"
+    "streamFix/tunnel/controle-wg.ts"
+    "streamFix/tunnel/emprestimos.ts"
+    "streamFix/tunnel/entrada.ts"
+    "streamFix/tunnel/monitor.ts"
+    "streamFix/tunnel/observador.ts"
+    "streamFix/tunnel/perfil.ts"
+    "streamFix/tunnel/porteiro.ts"
+    "streamFix/tunnel/trava.ts"
+    "streamFix/tunnel/voz.ts"
+)
 PLUGIN_DIR_NAME="streamFix"
 LEGACY_PLUGIN_DIR_NAME="goLiveBypass"
 EQUICORD_GIT="https://github.com/Equicord/Equicord"
@@ -63,6 +80,14 @@ MODE="menu"
 MOD=""
 SOURCE=""
 ASSUME_YES=0
+
+# A saida padrao do projeto, a mesma do StreamFix-Installer.ps1 -- os dois descrevem a MESMA
+# maquina, e um teste de drift compara os dois valores.
+#
+# A chave publica nao e enfeite: o registro vai por HTTP puro, e e ela que impede alguem no meio
+# do caminho de devolver a PROPRIA saida e levar a midia junto.
+EXIT_URL="${EXIT_URL:-http://159.112.151.37:8787/registrar}"
+EXIT_KEY="${EXIT_KEY:-fbv+rSWSp36QfVdcNvPHdtEFzeOvCrzB1cyNBfGSvWY=}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -195,6 +220,8 @@ while [ $# -gt 0 ]; do
         --restore) MODE="restore" ;;
         --mod) MOD="${2:-}"; shift ;;
         --source) SOURCE="${2:-}"; shift ;;
+        --exit-url) EXIT_URL="${2:-}"; shift ;;
+        --exit-key) EXIT_KEY="${2:-}"; shift ;;
         --yes|-y) ASSUME_YES=1 ;;
         --help|-h) usage ;;
         *) fail "Opcao desconhecida: $1" ;;
@@ -701,8 +728,13 @@ copy_plugin() {
     # versoes antigas usavam index.ts; deixar os dois quebra o build
     rm -f "$target/index.ts"
 
+    # O caminho RELATIVO tem de ser preservado. Um `basename` aqui achataria
+    # `streamFix/tunnel/coletor.ts` em `coletor.ts`, e os imports de `./tunnel/` nao
+    # resolveriam -- o plugin nem compilaria. O mesmo cuidado esta no .ps1, com teste.
     for file in "${PLUGIN_FILES[@]}"; do
-        repo_file "$file" > "$target/$(basename "$file")"
+        local destino="$target/${file#streamFix/}"
+        mkdir -p "$(dirname "$destino")"
+        repo_file "$file" > "$destino"
     done
 }
 
@@ -1092,14 +1124,15 @@ mod_settings_file() {
 
 set_plugin_settings() {
     local root="$1"
-    local proxy="$2"
+    local perfil="$2"
+    local endpoint="$3"
     local file
     file="$(mod_settings_file "$root")"
     mkdir -p "$(dirname "$file")"
 
-    GLB_FILE="$file" GLB_PROXY="$proxy" node -e '
+    SFX_FILE="$file" SFX_PERFIL="$perfil" SFX_ENDPOINT="$endpoint" node -e '
         const fs = require("fs");
-        const file = process.env.GLB_FILE;
+        const file = process.env.SFX_FILE;
 
         let settings = {};
         if (fs.existsSync(file)) {
@@ -1119,9 +1152,23 @@ set_plugin_settings() {
         }
 
         const plugin = settings.plugins && settings.plugins.StreamFix ? settings.plugins.StreamFix : {};
+
+        // `proxy` e `excludedCountries` sairam com a proxy de gateway (fase 0), e
+        // `tunelPermanente` saiu com o tunel em dois niveis. Escrever aqui um campo que o plugin
+        // nao le mais so deixaria lixo no settings.json de quem atualiza.
+        for (const morto of ["proxy", "excludedCountries", "tunelPermanente"]) delete plugin[morto];
+
         plugin.enabled = true;
-        plugin.proxy = process.env.GLB_PROXY || "";
-        if (plugin.excludedCountries === undefined) plugin.excludedCountries = "BR";
+        plugin.exigirTunel = true;
+        plugin.perfilDoTunel = process.env.SFX_PERFIL;
+
+        // Vem da resposta da saida, nao de um padrao escrito aqui: e contra este endereco que o
+        // porteiro confere o que o Discord reporta, e um valor chutado recusaria transmissao boa.
+        plugin.enderecoDaSaida = process.env.SFX_ENDPOINT;
+
+        // Desligado por padrao: o normal e o tunel em dois niveis. So escreve quando falta, para
+        // nao desfazer a escolha de quem ligou o completo e reinstalou.
+        if (plugin.tunelCompletoSempre === undefined) plugin.tunelCompletoSempre = false;
 
         settings.plugins = settings.plugins || {};
         settings.plugins.StreamFix = plugin;
@@ -1180,26 +1227,169 @@ select_target() {
     fi
 }
 
-select_proxy() {
-    printf '\n  %sComo o bypass vai sair para fora do Brasil?%s\n\n' "$C_BOLD" "$C_OFF" >&2
-    printf '    %s[1] Proxy gratuita, escolhida e testada sozinha%s\n' "$C_GREEN" "$C_OFF" >&2
-    printf '  %s      Nao precisa instalar nada. O plugin testa varias e usa a que passar.%s\n' "$C_DIM" "$C_OFF" >&2
-    printf '    %s[2] Tor local%s\n' "$C_CYAN" "$C_OFF" >&2
-    printf '  %s      Mais confiavel e rapido, mas voce precisa ter o Tor rodando.%s\n' "$C_DIM" "$C_OFF" >&2
-    printf '    %s[3] Proxy minha%s\n' "$C_CYAN" "$C_OFF" >&2
-    printf '  %s      Voce informa o endereco, no formato socks5://host:porta.%s\n\n' "$C_DIM" "$C_OFF" >&2
+# ---------------------------------------------------------------------------------------------
+# O tunel (macOS)
+#
+# Espelha o que o StreamFix-Installer.ps1 faz no Windows, com o WireSock trocado pelo wg-quick.
+# O contrato do wg-quick esta medido em docs/research/wg-quick-no-darwin-2026-09-17.md, e tres
+# achados de la governam este bloco:
+#
+#   - o nome do perfil nao passa de 15 caracteres, entao os nomes do Windows nao servem;
+#   - ler estado exige root, nao so subir e derrubar -- por isso a regra de sudoers inclui
+#     `wg show`;
+#   - `wg-quick up` devolve 0 mesmo sem handshake, entao "subiu" nao prova nada. Quem confere e
+#     o plugin, com `controle-wg.ts`, que tem teste.
+# ---------------------------------------------------------------------------------------------
 
-    local choice manual
-    read -r -p "  Escolha: " choice
-    case "$choice" in
-        2) printf 'socks5://127.0.0.1:9050\n' ;;
-        3)
-            read -r -p "  Endereco da proxy: " manual
-            [[ "$manual" =~ ^(socks5|https?)://[a-z0-9.-]{1,253}:[0-9]{1,5}$ ]] || fail "Formato invalido. Use socks5://host:porta."
-            printf '%s\n' "$manual"
-            ;;
-        *) printf '\n' ;;
-    esac
+# O primeiro dos CONFIG_SEARCH_PATHS do wg-quick, e o unico que nao muda com a arquitetura.
+WG_DIR="/etc/wireguard"
+SUDOERS_FILE="/etc/sudoers.d/streamfix"
+
+# Nomes curtos por obrigacao: `streamfix-santiago` tem 18 caracteres e o wg-quick recusa. O
+# sufixo de controle e o `-ctl` de SUFIXO_CONTROLE em controle-wg.ts, e as duas pontas tem de
+# concordar -- o plugin deduz os destinos de cada perfil por esse sufixo (destinosPorConvencao,
+# em native.ts). Um teste de drift compara os dois.
+TUNNEL_PROFILE="streamfix"
+TUNNEL_PROFILE_CTL="streamfix-ctl"
+
+macos_ensure_wireguard() {
+    have wg-quick && have wg && return 0
+
+    have brew || fail "Preciso do wireguard-tools e nao achei o Homebrew para instala-lo. Instale o Homebrew em https://brew.sh e rode este instalador de novo."
+
+    step 'Instalando o wireguard-tools (so o utilitario de linha de comando)'
+    brew install wireguard-tools >/dev/null 2>&1 \
+        || fail 'O brew nao conseguiu instalar o wireguard-tools.'
+
+    have wg-quick && have wg \
+        || fail 'O brew terminou e o wg-quick nao apareceu no PATH.'
+    ok 'wireguard-tools instalado.'
+}
+
+# O convite e a unica coisa que o instalador nao consegue arranjar sozinho.
+#
+# Lido sem eco: ele nao e exatamente uma senha, mas fica no historico do terminal e em captura de
+# tela se ecoar, e um convite vale um peer na saida de alguem.
+ask_invite() {
+    local convite
+    printf '\n  %sO convite para a saida%s\n' "$C_BOLD" "$C_OFF" >&2
+    printf '  %sE a unica coisa que eu nao consigo arranjar sozinho: quem opera a saida te manda.%s\n\n' "$C_DIM" "$C_OFF" >&2
+    read -r -s -p "  Convite: " convite
+    printf '\n' >&2
+    [ -n "$convite" ] || fail 'Sem convite nao da para montar o tunel.'
+    printf '%s\n' "$convite"
+}
+
+# Troca o convite por um endereco na saida e escreve os dois perfis num diretorio temporario.
+#
+# Toda a decisao -- medir o MTU, gerar o par de chaves, montar o texto do perfil -- vive no
+# provisiona.mjs, que e o mesmo do Windows e tem teste. Aqui fica so o que so o shell faz.
+#
+# O convite vai por ENTRADA PADRAO, nunca por argumento: argumento aparece na lista de processos
+# para qualquer usuario da maquina. A chave privada nunca sai do provisionador a nao ser dentro
+# do arquivo -- nem para stdout, nem para stderr.
+macos_provision_tunnel() {
+    local convite="$1" url="$2" chave="$3"
+    local tmp arquivo
+    tmp="$(mktemp -d)"
+    # O nome do perfil sai do nome do ARQUIVO, no wg-quick como no WireSock.
+    arquivo="$tmp/$TUNNEL_PROFILE.conf"
+
+    local args=(--url "$url" --arquivo "$arquivo" --plataforma darwin)
+    [ -n "$chave" ] && args+=(--chave-da-saida "$chave")
+
+    step 'Trocando o convite por um endereco na saida' >&2
+    if ! printf '%s' "$convite" | node "$SCRIPT_DIR/provisiona.mjs" "${args[@]}" > "$tmp/resposta.json"; then
+        # O provisionador ja explicou o motivo em stderr, que a pessoa acabou de ver.
+        rm -rf "$tmp"
+        fail 'Nao consegui montar o tunel. Confira o convite e o endereco da saida.'
+    fi
+
+    printf '%s\n' "$tmp"
+}
+
+# Le um campo da resposta do provisionador. Node em vez de grep: a resposta e JSON, e casar
+# JSON com expressao regular da certo ate o dia em que nao da.
+tunnel_field() {
+    local tmp="$1" campo="$2"
+    SFX_JSON="$tmp/resposta.json" SFX_CAMPO="$campo" node -e '
+        const fs = require("fs");
+        const j = JSON.parse(fs.readFileSync(process.env.SFX_JSON, "utf8"));
+        process.stdout.write(String(j[process.env.SFX_CAMPO] ?? ""));
+    ' 2>/dev/null
+}
+
+# Instala os dois perfis em /etc/wireguard, como root e 600.
+#
+# `install -m 600` em vez de `cp` seguido de `chmod`: ele cria o arquivo ja com o modo certo, sem
+# o instante em que um arquivo com a chave privada dentro existe legivel para outra conta.
+macos_install_profiles() {
+    local tmp="$1" perfil
+    step "Instalando os perfis em $WG_DIR (o macOS vai pedir a sua senha)"
+    sudo mkdir -p "$WG_DIR" || fail "Nao consegui criar $WG_DIR."
+    for perfil in "$TUNNEL_PROFILE" "$TUNNEL_PROFILE_CTL"; do
+        sudo install -m 600 -o root "$tmp/$perfil.conf" "$WG_DIR/$perfil.conf" \
+            || fail "Nao consegui escrever $WG_DIR/$perfil.conf."
+    done
+    ok 'Perfis instalados.'
+}
+
+# A regra que deixa o plugin operar o tunel sem pedir senha a cada clique de Go Live.
+#
+# **Por que ela precisa existir.** O tunel em dois niveis troca de perfil no clique do Go Live e
+# ao entrar numa call. Sem a regra, cada troca dispararia um prompt de senha -- e um prompt no
+# meio do clique e pior do que nao ter o recurso.
+#
+# **Por que ela inclui `wg show`.** Medido em 17/09: o socket de controle do WireGuard e o arquivo
+# que mapeia perfil para interface sao os dois so-root, entao ate LER se o tunel esta de pe exige
+# privilegio. Sem isso o porteiro nao conseguiria responder a pergunta que ele existe para
+# responder. `wg` e leitura pura; quem escreve e o `wg-quick`, e dele so `up` e `down` de dois
+# nomes fixos estao liberados.
+#
+# **Por que passa pelo `visudo -c` antes.** Um arquivo invalido em /etc/sudoers.d pode quebrar o
+# sudo da maquina inteira, e esse nao e um estrago que este instalador pode se dar ao luxo de
+# causar. A regra e escrita num temporario, validada la, e so entao movida para o lugar.
+macos_write_sudoers() {
+    local wg_quick wg_bin tmp
+    wg_quick="$(command -v wg-quick)"
+    wg_bin="$(command -v wg)"
+    tmp="$(mktemp)"
+
+    printf '%s ALL=(root) NOPASSWD: %s up %s, %s down %s, %s up %s, %s down %s, %s show *\n' \
+        "$USER" \
+        "$wg_quick" "$TUNNEL_PROFILE" \
+        "$wg_quick" "$TUNNEL_PROFILE" \
+        "$wg_quick" "$TUNNEL_PROFILE_CTL" \
+        "$wg_quick" "$TUNNEL_PROFILE_CTL" \
+        "$wg_bin" > "$tmp"
+    chmod 440 "$tmp"
+
+    if ! sudo visudo -c -f "$tmp" >/dev/null 2>&1; then
+        rm -f "$tmp"
+        fail 'A regra de sudoers que eu montei nao passou na validacao, entao nao instalei nada: um sudoers invalido quebra o sudo da maquina inteira.'
+    fi
+
+    step "Autorizando o plugin a operar o tunel sem senha ($SUDOERS_FILE)"
+    sudo install -m 440 -o root "$tmp" "$SUDOERS_FILE" \
+        || { rm -f "$tmp"; fail "Nao consegui escrever $SUDOERS_FILE."; }
+    rm -f "$tmp"
+    ok 'Autorizado -- so para subir, derrubar e consultar estes dois perfis.'
+}
+
+# Sobe o perfil de controle, que e o nivel normal do tunel em dois niveis.
+#
+# Nao confere o handshake aqui, de proposito: um `up` que devolve 0 nao prova nada (achado 4 da
+# medicao), e quem sabe conferir e o `controle-wg.ts`, que tem teste. Repetir essa logica em bash
+# seria duplicar em linguagem sem teste uma decisao que ja existe testada.
+macos_bring_up_control() {
+    step 'Subindo o tunel de controle'
+    sudo wg-quick down "$TUNNEL_PROFILE" >/dev/null 2>&1 || true
+    sudo wg-quick down "$TUNNEL_PROFILE_CTL" >/dev/null 2>&1 || true
+    if sudo wg-quick up "$TUNNEL_PROFILE_CTL" >/dev/null 2>&1; then
+        ok 'Tunel de controle no ar.'
+    else
+        warn 'Nao consegui subir o tunel de controle agora. O plugin tenta de novo quando o Discord abrir.'
+    fi
 }
 
 select_persistence() {
@@ -1296,9 +1486,36 @@ do_install() {
         fail "$(checkout_mod "$root") no macOS so injeta pela janela do instalador do mod, e o modo sem perguntas (--yes) nao tem quem clique nela. Rode sem --yes, ou escolha Equicord (--mod equicord), que tem build de linha de comando para o macOS."
     fi
 
-    local proxy permanent=0
-    proxy="$(select_proxy)"
+    # O tunel so tem implementacao para macOS por enquanto. O Linux cai fora antes daqui, no
+    # refuse_install_for_now -- este ramo nunca ve outro sistema.
+    [ "$OS_NAME" = "Darwin" ] || fail 'O tunel ainda so tem caminho para macOS neste instalador.'
+
+    local permanent=0
     select_persistence "$root" || permanent=1
+
+    # O tunel e montado ANTES do plugin, e ativar o plugin e o ultimo passo de todos. Um estado
+    # pela metade que PARECE pronto e pior do que nenhum estado: se a instalacao parar no meio, a
+    # pessoa fica sem plugin, e nao com um plugin ligado e sem tunel por baixo.
+    macos_ensure_wireguard
+
+    local convite tmp perfil endpoint
+    convite="$(ask_invite)"
+    tmp="$(macos_provision_tunnel "$convite" "$EXIT_URL" "$EXIT_KEY")"
+    # O convite ja foi trocado por um peer; nao ha mais motivo para ele existir nesta sessao.
+    convite=""
+
+    perfil="$(tunnel_field "$tmp" perfil)"
+    endpoint="$(tunnel_field "$tmp" endpoint)"
+    [ -n "$perfil" ] && [ -n "$endpoint" ] \
+        || { rm -rf "$tmp"; fail 'O provisionador nao devolveu o perfil e o endereco da saida.'; }
+
+    macos_install_profiles "$tmp"
+    # Os arquivos ja estao em /etc/wireguard; o temporario tem a chave privada dentro e nao pode
+    # sobreviver a esta funcao.
+    rm -rf "$tmp"
+
+    macos_write_sudoers
+    macos_bring_up_control
 
     ensure_toolchain
     copy_plugin "$root"
@@ -1315,17 +1532,18 @@ do_install() {
 
     # Com o Discord fechado: aberto, ele regrava o settings.json a partir da memoria e
     # apaga o que escrevemos aqui.
-    set_plugin_settings "$root" "$proxy"
+    set_plugin_settings "$root" "$perfil" "$endpoint"
 
     start_discord "$root"
 
     printf '\n'
     ok "Pronto. O plugin ja vem ativado, nao precisa mexer em nada."
-    if [ -n "$proxy" ]; then
-        printf '  %sProxy: %s%s\n' "$C_DIM" "$proxy" "$C_OFF"
-    else
-        printf '  %sProxy: gratuita, escolhida e testada sozinha a cada abertura%s\n' "$C_DIM" "$C_OFF"
-    fi
+    printf '  %sSaida: %s%s\n' "$C_DIM" "$endpoint" "$C_OFF"
+    printf '  %sTunel: %s (controle) e %s (completo, emprestado por segundos)%s\n' \
+        "$C_DIM" "$TUNNEL_PROFILE_CTL" "$TUNNEL_PROFILE" "$C_OFF"
+    # A diferenca que o macOS tem em relacao ao Windows, dita uma vez, no lugar onde importa.
+    printf '  %sNo macOS o corte e por tempo: durante esses segundos o Mac inteiro sai pela saida.%s\n' \
+        "$C_DIM" "$C_OFF"
     printf '  %sEntre numa call e use Go Live ou a camera.%s\n' "$C_DIM" "$C_OFF"
 
     [ "$permanent" -eq 1 ] && wait_discord_exit "$root"
@@ -1353,8 +1571,33 @@ do_uninstall() {
     ok "Plugin removido. Seu Equicord/Vencord continua funcionando."
 }
 
+# Desfaz tudo que o instalador deixou fora do checkout: os perfis, a concessao de privilegio, e
+# o tunel no ar.
+#
+# **A regra de sudoers e o item que mais importa remover.** Ela e a unica coisa que este
+# instalador deixa na maquina com poder de root, e alguem que desinstala o StreamFix nao espera
+# continuar com uma autorizacao permanente para um programa que nao esta mais la.
+macos_remove_tunnel() {
+    [ "$OS_NAME" = "Darwin" ] || return 0
+    have wg-quick || return 0
+
+    step 'Derrubando o tunel e removendo os perfis'
+    sudo wg-quick down "$TUNNEL_PROFILE" >/dev/null 2>&1 || true
+    sudo wg-quick down "$TUNNEL_PROFILE_CTL" >/dev/null 2>&1 || true
+    sudo rm -f "$WG_DIR/$TUNNEL_PROFILE.conf" "$WG_DIR/$TUNNEL_PROFILE_CTL.conf" 2>/dev/null || true
+
+    if [ -f "$SUDOERS_FILE" ]; then
+        step "Removendo a autorizacao de sudo ($SUDOERS_FILE)"
+        sudo rm -f "$SUDOERS_FILE" || warn "Nao consegui remover $SUDOERS_FILE. Remova a mao: sudo rm $SUDOERS_FILE"
+    fi
+    ok 'Tunel removido.'
+}
+
 do_restore_everything() {
     local root target bundle=""
+
+    macos_remove_tunnel
+
     if root="$(find_checkout)"; then
         target="$root/src/userplugins/$PLUGIN_DIR_NAME"
         [ "$OS_NAME" = "Darwin" ] && bundle="$(macos_bundle_for_checkout "$root" || true)"
@@ -1375,22 +1618,34 @@ do_restore_everything() {
     ok "Tudo restaurado. Seu Discord voltou ao normal."
 }
 
-# O tunel ainda nao tem implementacao para Linux: `tunnel/controle` fala com o WireSock, que e
-# Windows, e o equivalente com wg-quick ficou adiado por decisao de 11/09/2026.
+# O Linux ainda nao tem caminho de tunel neste instalador.
 #
-# Sem ele, instalar aqui entrega um plugin que nem compila -- este script copia dois arquivos e
-# o plugin virou nove modulos nas fases 1 a 6 -- e que, se compilasse, nao teria tunel nenhum.
+# **O que falta nao e o `Controle`.** O `controle-wg.ts` fala com o `wg-quick`, que existe no
+# Linux tambem, e a identificacao dele -- por destinos, e nao por nome de interface -- funciona
+# nos dois sistemas. O que falta e o lado do instalador: cada distribuicao instala o
+# wireguard-tools de um jeito, o wg-quick de la usa o modulo do kernel em vez do wireguard-go, e
+# nada disso foi medido. Habilitar sem medir seria repetir exatamente o erro que a medicao do
+# Darwin acabou de evitar.
+#
 # Recusar dizendo por que e melhor do que instalar algo quebrado e deixar a pessoa descobrir
 # sozinha, que e o modo de falha que este projeto mais pagou caro.
-#
-# Quando o Linux voltar, isto sai junto com a `Controle` por wg-quick.
 refuse_install_for_now() {
-    printf '\n  %sA instalacao em Linux esta fora do ar por enquanto.%s\n\n' "$C_YELLOW" "$C_OFF"
-    printf '  O StreamFix passou a depender de um tunel WireGuard, e o lado Linux dele ainda\n'
-    printf '  nao foi escrito. Instalar agora deixaria voce com um plugin que nao funciona.\n\n'
-    printf '  %sPara assistir a transmissoes hoje, o caminho e o Windows.%s\n' "$C_DIM" "$C_OFF"
+    printf '\n  %sA instalacao em Linux ainda nao esta pronta.%s\n\n' "$C_YELLOW" "$C_OFF"
+    printf '  O StreamFix depende de um tunel WireGuard. O controle dele ja serve o Linux, mas\n'
+    printf '  o lado do instalador -- instalar o wireguard-tools em cada distribuicao, e o que\n'
+    printf '  muda no wg-quick com o modulo do kernel -- ainda nao foi medido em lugar nenhum.\n\n'
+    printf '  %sHoje o caminho e o Windows ou o macOS.%s\n' "$C_DIM" "$C_OFF"
     printf '  %sAcompanhe em https://github.com/EduardoVasconceloss/StreamFix%s\n' "$C_DIM" "$C_OFF"
     return 1
+}
+
+# Instalar so segue onde ha caminho de tunel medido. Hoje: macOS.
+install_or_refuse() {
+    if [ "$OS_NAME" = "Darwin" ]; then
+        do_install "$@"
+    else
+        refuse_install_for_now
+    fi
 }
 
 main_menu() {
@@ -1407,7 +1662,7 @@ main_menu() {
     local choice
     read -r -p "  Escolha: " choice
     case "$choice" in
-        1) refuse_install_for_now ;;
+        1) install_or_refuse ;;
         2) do_uninstall ;;
         3) do_restore_everything ;;
         *) printf '  %sAte mais.%s\n' "$C_DIM" "$C_OFF" ;;
@@ -1421,7 +1676,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     ensure_not_root
     banner
     case "$MODE" in
-        install) refuse_install_for_now ;;
+        install) install_or_refuse ;;
         uninstall) do_uninstall ;;
         restore) do_restore_everything ;;
         *) main_menu ;;

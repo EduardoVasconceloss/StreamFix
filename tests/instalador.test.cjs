@@ -840,3 +840,119 @@ Confere ($r[1] -eq 'DNS = 1.1.1.1') 'DNS que faltava entra depois do Address'
         }
     });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Deriva entre os dois instaladores
+//
+// O .ps1 e o .sh descrevem a MESMA instalacao em sistemas diferentes. Quando os dois guardam o
+// mesmo valor em lugares separados, o valor diverge em silencio -- e o sintoma nao e um erro, e
+// uma instalacao que parece certa e aponta para outro lugar. Estes testes existem so para isso.
+// ---------------------------------------------------------------------------------------------
+
+describe("deriva entre o instalador de Windows e o de shell", () => {
+    const SHELL = readFileSync(join(RAIZ, "installer", "streamfix-installer.sh"), "utf8");
+    const CONTROLE_WG = readFileSync(
+        join(RAIZ, "streamFix", "tunnel", "controle-wg.ts"), "utf8"
+    );
+
+    /** Le um array de literais de string, do .ps1 ou do .sh. */
+    function listaDe(texto, abertura) {
+        const i = texto.indexOf(abertura);
+        assert.notEqual(i, -1, `nao achei ${abertura}`);
+        const fecha = texto.indexOf(")", i);
+        return [...texto.slice(i, fecha).matchAll(/['"]([^'"]+)['"]/g)].map(m => m[1]);
+    }
+
+    test("os dois instaladores copiam exatamente os mesmos modulos do plugin", () => {
+        // A deriva que isto pega: um modulo novo entra na lista do .ps1 e nao na do .sh. Quem
+        // instalasse no macOS receberia um plugin que nem compila, porque um import nao
+        // resolveria -- e o erro apareceria no build, longe da causa.
+        const noPs1 = listaDe(INSTALADOR, "$PluginFiles = @(");
+        const noSh = listaDe(SHELL, "PLUGIN_FILES=(");
+
+        assert.deepEqual([...noSh].sort(), [...noPs1].sort());
+    });
+
+    test("a lista cobre todo modulo que existe em disco", () => {
+        const emDisco = [
+            ...readdirSync(join(RAIZ, "streamFix"))
+                .filter(f => /\.(ts|tsx)$/.test(f))
+                .map(f => `streamFix/${f}`),
+            ...readdirSync(join(RAIZ, "streamFix", "tunnel"))
+                .filter(f => /\.ts$/.test(f))
+                .map(f => `streamFix/tunnel/${f}`)
+        ];
+        const noSh = listaDe(SHELL, "PLUGIN_FILES=(");
+        for (const arquivo of emDisco) {
+            assert.ok(noSh.includes(arquivo), `${arquivo} existe mas o instalador de shell nao o copia`);
+        }
+    });
+
+    test("o instalador de shell preserva o caminho relativo ao copiar", () => {
+        // `basename` achataria streamFix/tunnel/coletor.ts em coletor.ts, e os imports de
+        // ./tunnel/ nao resolveriam. O mesmo cuidado, e o mesmo teste, existem para o .ps1.
+        assert.ok(
+            !/repo_file "\$file" > "\$target\/\$\(basename/.test(SHELL),
+            "basename achataria a pasta tunnel/"
+        );
+    });
+
+    test("os dois instaladores apontam para a mesma saida", () => {
+        const urlPs1 = /\$ExitUrl = '([^']+)'/.exec(INSTALADOR)[1];
+        const urlSh = /EXIT_URL="\$\{EXIT_URL:-([^}]+)\}"/.exec(SHELL)[1];
+        assert.equal(urlSh, urlPs1);
+
+        const chavePs1 = /\$ExitKey = '([^']+)'/.exec(INSTALADOR)[1];
+        const chaveSh = /EXIT_KEY="\$\{EXIT_KEY:-([^}]+)\}"/.exec(SHELL)[1];
+        assert.equal(
+            chaveSh, chavePs1,
+            "a chave publica e o que impede alguem no meio do caminho de devolver a propria saida"
+        );
+    });
+
+    test("o nome do perfil de controle do shell casa com o sufixo que o plugin deduz", () => {
+        // As duas pontas TEM de concordar: o plugin deduz os destinos de cada perfil pelo
+        // sufixo (destinosPorConvencao, em native.ts). Se o instalador escrever
+        // `streamfix-controle` e o plugin procurar por `-ctl`, o perfil de controle passa a ser
+        // tratado como completo -- e o tunel leva a maquina inteira o tempo todo, em silencio.
+        const sufixo = /SUFIXO_CONTROLE = "([^"]+)"/.exec(CONTROLE_WG)[1];
+        const completo = /^TUNNEL_PROFILE="([^"]+)"$/m.exec(SHELL)[1];
+        const controle = /^TUNNEL_PROFILE_CTL="([^"]+)"$/m.exec(SHELL)[1];
+
+        assert.equal(controle, `${completo}${sufixo}`);
+    });
+
+    test("os dois nomes de perfil cabem no limite do wg-quick", () => {
+        const limite = Number(/LIMITE_NOME = (\d+)/.exec(CONTROLE_WG)[1]);
+        for (const re of [/^TUNNEL_PROFILE="([^"]+)"$/m, /^TUNNEL_PROFILE_CTL="([^"]+)"$/m]) {
+            const nome = re.exec(SHELL)[1];
+            assert.ok(nome.length <= limite, `"${nome}" tem ${nome.length}, o wg-quick aceita ${limite}`);
+        }
+    });
+
+    test("a regra de sudoers libera leitura, e nao so subir e derrubar", () => {
+        // Medido em 17/09: ate LER se o tunel esta de pe exige root. Sem `wg show` na regra, o
+        // porteiro nao consegue responder a pergunta que ele existe para responder, e toda
+        // transmissao boa seria recusada com "nao consegui falar com o tunel".
+        assert.match(SHELL, /"\$wg_bin" > "\$tmp"/);
+        assert.match(SHELL, /%s show \*/);
+    });
+
+    test("a regra de sudoers passa pelo visudo antes de ser instalada", () => {
+        // Um /etc/sudoers.d invalido quebra o sudo da maquina inteira.
+        assert.match(SHELL, /visudo -c -f/);
+    });
+
+    test("a desinstalacao remove a concessao de privilegio", () => {
+        // E a unica coisa que este instalador deixa na maquina com poder de root. Quem
+        // desinstala nao espera continuar com uma autorizacao permanente.
+        assert.match(SHELL, /rm -f "\$SUDOERS_FILE"/);
+    });
+
+    test("o instalador de shell nao escreve mais as configuracoes da era da proxy", () => {
+        assert.ok(!/plugin\.proxy = /.test(SHELL), "proxy saiu na fase 0");
+        assert.match(SHELL, /plugin\.exigirTunel = true/);
+        assert.match(SHELL, /plugin\.perfilDoTunel = /);
+        assert.match(SHELL, /plugin\.enderecoDaSaida = /);
+    });
+});

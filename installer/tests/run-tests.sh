@@ -843,7 +843,7 @@ test_do_install_nao_falha_cedo_vencord_ja_injetado_macos_assume_yes() {
     select_proxy() { printf '\n'; }
     # Um checkout ja injetado nunca chega perto da janela do instalador do mod (do_install so
     # reinicia o Discord nesse caso); o sentinela confere que o guard nao barra sem necessidade.
-    ensure_toolchain() { fail "CHEGOU_NO_TOOLCHAIN"; }
+    macos_ensure_wireguard() { fail "CHEGOU_NO_TUNEL"; }
 
     local prev="$ASSUME_YES" saida
     ASSUME_YES=1
@@ -851,11 +851,11 @@ test_do_install_nao_falha_cedo_vencord_ja_injetado_macos_assume_yes() {
     ASSUME_YES="$prev"
 
     case "$saida" in
-        *CHEGOU_NO_TOOLCHAIN*) assert_true "nao barra um Vencord ja injetado (nao precisaria da janela)" true ;;
+        *CHEGOU_NO_TUNEL*) assert_true "nao barra um Vencord ja injetado (nao precisaria da janela)" true ;;
         *) assert_true "nao barra um Vencord ja injetado (nao precisaria da janela)" false ;;
     esac
 
-    unset -f select_target select_proxy ensure_toolchain
+    unset -f select_target macos_ensure_wireguard
     fixture_teardown
 }
 
@@ -868,7 +868,7 @@ test_do_install_nao_falha_cedo_equicord_macos_assume_yes() {
     select_target() { printf '%s\n' "$checkout"; }
     select_proxy() { printf '\n'; }
     # Marca que o fluxo normal seguiu ate aqui, sem rodar pnpm de verdade.
-    ensure_toolchain() { fail "CHEGOU_NO_TOOLCHAIN"; }
+    macos_ensure_wireguard() { fail "CHEGOU_NO_TUNEL"; }
 
     local prev="$ASSUME_YES" saida
     ASSUME_YES=1
@@ -876,11 +876,11 @@ test_do_install_nao_falha_cedo_equicord_macos_assume_yes() {
     ASSUME_YES="$prev"
 
     case "$saida" in
-        *CHEGOU_NO_TOOLCHAIN*) assert_true "nao barra o Equicord (tem build de linha de comando)" true ;;
+        *CHEGOU_NO_TUNEL*) assert_true "nao barra o Equicord (tem build de linha de comando)" true ;;
         *) assert_true "nao barra o Equicord (tem build de linha de comando)" false ;;
     esac
 
-    unset -f select_target select_proxy ensure_toolchain
+    unset -f select_target macos_ensure_wireguard
     fixture_teardown
 }
 
