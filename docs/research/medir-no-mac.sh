@@ -167,7 +167,10 @@ else
         # para documentacao. Nao existe ninguem do outro lado, de proposito -- assim a medicao
         # do "handshake que nao fecha" e sempre igual, em vez de depender de um servidor estar
         # no ar. E ele leva so 192.0.2.0/24, entao nao desvia trafego nenhum seu.
-        PERFIL="streamfix-medicao"
+        # 11 caracteres, e isso importa: o wg-quick so aceita nome de ate 15 (medido em 17/09,
+        # ver wg-quick-no-darwin-2026-09-17.md). "streamfix-medicao" teria 17 e cairia na
+        # mesma armadilha que a medicao acabou de descobrir.
+        PERFIL="sfx-medicao"
         passo "criando o perfil de brinquedo $PERFIL (endereco reservado; nao desvia nada seu)"
         sudo mkdir -p /etc/wireguard
         printf '[Interface]\nPrivateKey = %s\nAddress = 10.99.99.2/32\nMTU = 1380\n\n[Peer]\nPublicKey = %s\nEndpoint = 192.0.2.1:51820\nAllowedIPs = 192.0.2.0/24\nPersistentKeepalive = 25\n' \
@@ -176,35 +179,42 @@ else
         sudo chmod 600 "/etc/wireguard/$PERFIL.conf"
 
         titulo 'o contrato do CLI'
+        # Tudo aqui vai com sudo por causa do que a medicao no runner mostrou em 17/09: o
+        # socket de controle e `srwx------ root daemon` e o arquivo .name e `-r-------- root`,
+        # entao ATE LER ESTADO precisa de privilegio. Sem sudo, toda pergunta responde
+        # "Unable to access interface: Permission denied", que e facil de confundir com
+        # "o tunel nao esta de pe".
         echo '--- wg show de um perfil que NAO esta de pe ---'
-        wg show "$PERFIL"; echo "exit=$?"
+        sudo wg show "$PERFIL"; echo "exit=$?"
 
         echo '--- wg-quick up ---'
         sudo wg-quick up "$PERFIL"; echo "exit=$?"
 
-        # A pergunta central desta secao. No Linux o argumento de `wg show` e o nome da
-        # interface; no Darwin a interface e utunN, escolhida pelo sistema, e o wg-quick grava
-        # o mapeamento em /var/run/wireguard/<perfil>.name. Se `wg show <perfil>` funcionar, o
-        # controle pode perguntar pelo nome do perfil, igual faz hoje com o WireSock. Se nao,
-        # ele precisa resolver o utunN antes de cada pergunta.
-        echo '--- wg show PELO NOME DO PERFIL: funciona no Darwin? ---'
-        wg show "$PERFIL"; echo "exit=$?"
-        echo '--- o mapeamento nome -> utunN ---'
-        ls -la /var/run/wireguard/ 2>&1
-        cat "/var/run/wireguard/$PERFIL.name" 2>&1; echo
+        # Ja sabemos do runner que isto NAO resolve: `wg` nao consulta o .name, entao o nome do
+        # perfil nao serve como argumento no Darwin. Fica aqui para confirmar numa instalacao de
+        # verdade (o runner e uma VM; um Mac com outra versao do wireguard-tools pode diferir).
+        echo '--- wg show PELO NOME DO PERFIL: confirma que nao resolve? ---'
+        sudo wg show "$PERFIL"; echo "exit=$?"
+        echo '--- o mapeamento nome -> utunN (precisa de sudo para ler) ---'
+        sudo ls -la /var/run/wireguard/ 2>&1
+        UTUN="$(sudo cat "/var/run/wireguard/$PERFIL.name" 2>/dev/null)"
+        echo "$PERFIL -> ${UTUN:-(nao consegui ler)}"
         echo '--- interfaces ---'
-        wg show interfaces
+        sudo wg show interfaces
 
-        # O analogo do `AllowedApps` do WireSock: conferir o que o tunel REALMENTE aplicou, em
-        # vez de supor que aplicou o que o arquivo pedia. E a licao mais cara do projeto.
-        echo '--- allowed-ips aplicados ---'
-        wg show "$PERFIL" allowed-ips; echo "exit=$?"
+        if [ -n "$UTUN" ]; then
+            # O analogo do `AllowedApps` do WireSock: conferir o que o tunel REALMENTE aplicou,
+            # em vez de supor que aplicou o que o arquivo pedia. E a licao mais cara do projeto.
+            echo "--- allowed-ips aplicados, perguntando pelo $UTUN ---"
+            sudo wg show "$UTUN" allowed-ips; echo "exit=$?"
 
-        # Com endpoint morto isto tem de ser 0. E a prova de que `up` dar certo NAO significa
-        # tunel de pe -- a diferenca estrutural entre wg-quick e o CLI do WireSock.
-        echo '--- handshake (endpoint reservado: tem de ser 0) ---'
-        wg show "$PERFIL" latest-handshakes
-        wg show "$PERFIL" transfer
+            # Com endpoint reservado isto tem de ser 0. E a prova de que `up` dar certo NAO
+            # significa tunel de pe -- a diferenca estrutural entre wg-quick e o CLI do
+            # WireSock. O runner nao conseguiu chegar aqui (era tudo sem sudo).
+            echo '--- handshake (endpoint reservado: tem de ser 0) ---'
+            sudo wg show "$UTUN" latest-handshakes
+            sudo wg show "$UTUN" transfer
+        fi
 
         echo '--- wg-quick down ---'
         sudo wg-quick down "$PERFIL"; echo "exit=$?"
@@ -221,8 +231,13 @@ else
         titulo 'a regra restrita de sudoers recusa o resto?'
 
         USUARIO="$(whoami)"
+        # `wg show` entra na regra por necessidade, nao por conveniencia: a medicao de 17/09
+        # mostrou que ler estado tambem exige root. Sem isso o plugin nao consegue responder
+        # "o tunel esta de pe?", que e a pergunta do porteiro a cada clique de Go Live. Em
+        # compensacao `wg` e leitura pura, muito mais barato em risco do que `wg-quick`.
+        WG_BIN="$(command -v wg)"
         sudo tee /etc/sudoers.d/streamfix-medicao >/dev/null <<EOF
-$USUARIO ALL=(root) NOPASSWD: $WG_QUICK up $PERFIL, $WG_QUICK down $PERFIL
+$USUARIO ALL=(root) NOPASSWD: $WG_QUICK up $PERFIL, $WG_QUICK down $PERFIL, $WG_BIN show *
 EOF
         sudo chmod 440 /etc/sudoers.d/streamfix-medicao
 
