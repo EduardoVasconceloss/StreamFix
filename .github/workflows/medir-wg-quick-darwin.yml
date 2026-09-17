@@ -1,0 +1,204 @@
+name: Medir o contrato do wg-quick no Darwin
+
+# Este workflow nao testa nada: ele MEDE, e a saida dele e materia-prima para escrever
+# `streamFix/tunnel/controle-wg.ts`.
+#
+# Todo o `controle.ts` do WireSock foi escrito a partir de um spike contra o CLI real, e cada
+# decisao dele cita a medicao que a sustenta ("medido em 11/09"). Tres das coisas que governam
+# aquele arquivo -- codigo de saida que nao vale nada, saida de texto traduzida, split tunnel
+# reportado so no log do connect -- sao todas invisiveis na documentacao e obvias na execucao.
+# O wg-quick tem o seu proprio conjunto dessas, e adivinha-las produziria exatamente o modo de
+# falha que este projeto existe para evitar: o tunel sobe, parece certo, e esta errado.
+#
+# Roda sob demanda, nao em push: ele instala pacote, sobe interface de rede e mexe em tabela de
+# rotas. Nada disso pertence ao caminho de CI de todo commit.
+#
+# O que ele NAO mede, e que so o Mac de uma pessoa de verdade mede: Discord, Go Live, latencia,
+# e se o gate aceita a midia.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  medir:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar o wireguard-tools
+        run: brew install wireguard-tools
+
+      # Onde o wg-quick esta e quais diretorios ele varre atras do `.conf` sao as duas coisas
+      # que o instalador precisa saber para escrever o perfil no lugar certo e para montar a
+      # regra do sudoers com o caminho absoluto. O proprio script e a fonte de verdade: ele e
+      # bash, entao da para ler a lista em vez de supo-la.
+      - name: Onde o wg-quick vive e onde ele procura perfil
+        run: |
+          set -x
+          which wg wg-quick
+          brew --prefix wireguard-tools
+          echo '--- CONFIG_SEARCH_PATHS, do proprio script ---'
+          grep -n 'CONFIG_SEARCH_PATHS\|WG_CONFIG\|/etc/wireguard' "$(which wg-quick)" | head -20
+          echo '--- versao ---'
+          wg --version
+
+      # Duas perguntas aqui, e as duas decidem a forma do `controle-wg.ts`:
+      #
+      #   1. `wg show <perfil>` resolve o NOME DO PERFIL no Darwin? No Linux o argumento e o nome
+      #      da interface e pronto; no Darwin a interface e utunN, escolhida pelo sistema, e o
+      #      wg-quick grava o mapeamento em /var/run/wireguard/<perfil>.name. Se `wg show` le
+      #      esse arquivo, o controle pode perguntar pelo nome do perfil, como faz hoje com o
+      #      WireSock. Se nao le, ele precisa resolver o utunN antes de qualquer pergunta.
+      #   2. Qual o codigo de saida e o texto com a interface no ar e fora dela. O texto do
+      #      wireguard-tools nao e traduzido -- ao contrario do WireSock --, entao aqui talvez
+      #      de para casar com texto, que e mais barato do que os malabarismos do controle atual.
+      - name: O contrato com a interface FORA
+        run: |
+          set +e
+          echo '--- wg show num perfil que nao existe ---'
+          wg show streamfix-santiago; echo "exit=$?"
+          echo '--- wg show interfaces, sem nenhuma ---'
+          wg show interfaces; echo "exit=$?"
+          echo '--- wg-quick down de quem nao esta de pe ---'
+          sudo wg-quick down streamfix-santiago; echo "exit=$?"
+          echo '--- o diretorio de estado existe? ---'
+          ls -la /var/run/wireguard/ 2>&1; echo "exit=$?"
+
+      # Um peer que nao existe, de proposito. E o caso que mais importa medir, porque e a
+      # diferenca estrutural entre os dois CLIs: o `wiresock-connect-cli connect` BLOQUEIA ate o
+      # handshake fechar (e por isso o controle atual tem PRAZO_CONEXAO_MS, senao o porteiro
+      # congela). O WireGuard nao tem conexao: o `up` configura a interface e volta na hora,
+      # com ou sem peer do outro lado.
+      #
+      # Se o `up` de um perfil com endpoint morto devolver 0, entao sucesso do `up` NAO significa
+      # tunel de pe, e o `subir` do controle-wg tem de conferir o handshake por conta propria --
+      # que e uma verificacao que o lado WireSock ganhava de graca.
+      - name: Escrever os dois perfis (o de controle e o completo)
+        run: |
+          sudo mkdir -p /etc/wireguard
+          chave_priv=$(wg genkey)
+          chave_pub_peer=$(wg genkey | wg pubkey)
+
+          # Endpoint deliberadamente morto: 192.0.2.1 e TEST-NET-1 (RFC 5737), reservado para
+          # documentacao e garantidamente sem ninguem do outro lado. Assim a medicao do handshake
+          # que nao fecha e determinista, em vez de depender de uma VPS estar no ar.
+          escrever() {
+            printf '[Interface]\nPrivateKey = %s\nAddress = 10.8.0.2/32\nMTU = 1380\n\n[Peer]\nPublicKey = %s\nEndpoint = 192.0.2.1:51820\nAllowedIPs = %s\nPersistentKeepalive = 25\n' \
+              "$chave_priv" "$chave_pub_peer" "$2" | sudo tee "/etc/wireguard/$1.conf" >/dev/null
+            sudo chmod 600 "/etc/wireguard/$1.conf"
+          }
+
+          # Os mesmos dois niveis da producao: FAIXA_CONTROLE de streamFix/tunnel/perfil.ts, e o
+          # completo. No macOS o completo nao tem AllowedApps -- o corte la e por tempo, nao por
+          # aplicativo -- entao ele e 0.0.0.0/0 de verdade, e o que esta medicao precisa mostrar
+          # e o estrago que isso faz na tabela de rotas a cada emprestimo.
+          escrever streamfix-santiago-controle '162.159.128.0/17, 1.1.1.1/32'
+          escrever streamfix-santiago '0.0.0.0/0'
+          ls -la /etc/wireguard/
+
+      - name: Rota padrao ANTES de qualquer tunel
+        run: netstat -rn -f inet | head -15
+
+      - name: Subir o perfil de CONTROLE, e ver o que ele aplicou
+        run: |
+          set +e
+          echo '--- wg-quick up (verbose: ele ecoa cada comando que executa) ---'
+          sudo wg-quick up streamfix-santiago-controle; echo "exit=$?"
+          echo '--- wg show <perfil>: o nome resolve? ---'
+          wg show streamfix-santiago-controle; echo "exit=$?"
+          echo '--- wg show interfaces ---'
+          wg show interfaces
+          echo '--- o arquivo de mapeamento nome -> utunN ---'
+          ls -la /var/run/wireguard/; cat /var/run/wireguard/*.name 2>&1
+          echo '--- allowed-ips aplicados: o analogo do AllowedApps do WireSock ---'
+          echo "por nome:"; wg show streamfix-santiago-controle allowed-ips; echo "exit=$?"
+          echo "por utun:"; wg show all allowed-ips
+          echo '--- handshake: com endpoint morto tem de estar em 0 ---'
+          wg show all latest-handshakes
+          wg show all transfer
+          echo '--- a rota padrao mudou? (nao deveria: so duas faixas) ---'
+          netstat -rn -f inet | head -15
+
+      - name: Derrubar o controle
+        run: |
+          set +e
+          sudo wg-quick down streamfix-santiago-controle; echo "exit=$?"
+          wg show interfaces
+          ls -la /var/run/wireguard/ 2>&1
+
+      # A pergunta desta etapa: quanto da tabela de rotas o `0.0.0.0/0` reescreve, e o que sobra
+      # quando ele sai. No macOS o emprestimo do completo acontece varias vezes por sessao (a
+      # cada clique de Go Live, a cada entrada em call), entao este churn nao e um evento raro --
+      # e o custo recorrente do desenho escolhido.
+      - name: Subir o COMPLETO (0.0.0.0/0) e medir o estrago na tabela de rotas
+        run: |
+          set +e
+          sudo wg-quick up streamfix-santiago; echo "exit=$?"
+          echo '--- rota padrao COM o completo no ar ---'
+          netstat -rn -f inet | head -20
+          echo '--- allowed-ips ---'
+          wg show streamfix-santiago allowed-ips
+          echo '--- handshake (endpoint morto: 0) ---'
+          wg show streamfix-santiago latest-handshakes
+          echo '--- os dois perfis ao mesmo tempo? ---'
+          sudo wg-quick up streamfix-santiago-controle; echo "exit=$?"
+          wg show interfaces
+
+      - name: Derrubar tudo e conferir que a rota padrao voltou
+        run: |
+          set +e
+          sudo wg-quick down streamfix-santiago; echo "exit=$?"
+          sudo wg-quick down streamfix-santiago-controle; echo "exit=$?"
+          wg show interfaces
+          echo '--- rota padrao DEPOIS ---'
+          netstat -rn -f inet | head -15
+
+      # A troca de perfil e a operacao mais frequente do plugin, e no Windows ela custa ~1,25 s
+      # (medido em 12/09). Se no macOS ela custar muito mais, o emprestimo de segundos fica caro
+      # e o desenho precisa saber disso antes de ser escrito, nao depois.
+      - name: Quanto custa trocar de perfil
+        run: |
+          set +e
+          sudo wg-quick up streamfix-santiago-controle
+          for i in 1 2 3; do
+            inicio=$(python3 -c 'import time; print(time.time())')
+            sudo wg-quick down streamfix-santiago-controle >/dev/null 2>&1
+            sudo wg-quick up streamfix-santiago >/dev/null 2>&1
+            sudo wg-quick down streamfix-santiago >/dev/null 2>&1
+            sudo wg-quick up streamfix-santiago-controle >/dev/null 2>&1
+            fim=$(python3 -c 'import time; print(time.time())')
+            python3 -c "print(f'ciclo $i (controle->completo->controle): {($fim - $inicio) * 1000:.0f} ms')"
+          done
+          sudo wg-quick down streamfix-santiago-controle
+
+      # O caminho que a producao vai usar de verdade: o plugin nao pode pedir senha no clique do
+      # Go Live, entao o instalador escreve uma regra restrita em /etc/sudoers.d.
+      #
+      # **O que esta etapa prova e o que ela NAO prova.** Ela prova que a sintaxe passa no
+      # `visudo -c` e que o comando autorizado roda com `sudo -n`. Ela NAO prova que a regra
+      # recusa o resto: o runner do GitHub ja da `NOPASSWD: ALL` ao usuario `runner`, entao aqui
+      # tudo passa, autorizado ou nao, e o teste negativo abaixo esta condenado a dar verde por
+      # motivo errado. Ele fica no arquivo porque a saida dele documenta essa limitacao em vez de
+      # escondê-la -- a recusa de verdade so da para medir numa conta comum, no Mac de alguem.
+      - name: A regra do sudoers restrita funciona (a recusa, so no Mac de verdade)
+        run: |
+          set +e
+          caminho_wg_quick="$(which wg-quick)"
+          usuario="$(whoami)"
+          sudo tee /etc/sudoers.d/streamfix >/dev/null <<EOF
+          $usuario ALL=(root) NOPASSWD: $caminho_wg_quick up streamfix-santiago, $caminho_wg_quick down streamfix-santiago, $caminho_wg_quick up streamfix-santiago-controle, $caminho_wg_quick down streamfix-santiago-controle
+          EOF
+          sudo chmod 440 /etc/sudoers.d/streamfix
+          echo '--- visudo aceita a regra? ---'
+          sudo visudo -c -f /etc/sudoers.d/streamfix; echo "exit=$?"
+          echo '--- o que esta autorizado sem senha (esperado: o ALL do runner ofuscando a nossa regra) ---'
+          sudo -n -l 2>&1 | tail -20
+          echo '--- o autorizado passa ---'
+          sudo -n "$caminho_wg_quick" up streamfix-santiago-controle; echo "exit=$?"
+          sudo -n "$caminho_wg_quick" down streamfix-santiago-controle; echo "exit=$?"
+          echo '--- inconclusivo aqui, ver o comentario da etapa: o runner autoriza tudo ---'
+          sudo -n "$caminho_wg_quick" up qualquer-outro; echo "exit=$?"
+
+          # Nao deixar a regra para tras: as etapas seguintes (se alguem acrescentar alguma) e
+          # qualquer cache de runner nao devem herdar uma concessao de privilegio.
+          sudo rm -f /etc/sudoers.d/streamfix
