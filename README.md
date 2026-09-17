@@ -3,7 +3,7 @@
 [![Release](https://img.shields.io/github/v/release/EduardoVasconceloss/StreamFix?style=for-the-badge&label=vers%C3%A3o&color=5865F2)](https://github.com/EduardoVasconceloss/StreamFix/releases/latest)
 [![Licença](https://img.shields.io/github/license/EduardoVasconceloss/StreamFix?style=for-the-badge&color=5865F2)](LICENSE)
 
-Plugin para Equicord e Vencord, feito por um desenvolvedor brasileiro, que devolve o Go Live e a câmera para usuários brasileiros. Ele manda **só o Discord** por um túnel WireGuard que sai fora do Brasil. Todo o resto do computador continua saindo direto, pelo seu IP de sempre.
+Plugin para Equicord e Vencord, feito por um desenvolvedor brasileiro, que devolve o Go Live e a câmera para usuários brasileiros. Ele manda o Discord por um túnel WireGuard que sai fora do Brasil, e deixa o resto do computador saindo direto, pelo seu IP de sempre. No Windows isso vale o tempo todo; no macOS, fora dos poucos segundos em que o túnel completo sobe — ver [Antes de instalar](#antes-de-instalar).
 
 > English summary at the end of this document.
 
@@ -27,7 +27,9 @@ Plugin para Equicord e Vencord, feito por um desenvolvedor brasileiro, que devol
 
 ## Antes de instalar
 
-**Windows.** Linux e macOS estão de fora por enquanto — o túnel usa o [WireSock](https://www.wiresock.net), que é Windows. O instalador de Linux recusa em vez de instalar algo que não vai funcionar.
+**Windows ou macOS.** Linux está de fora por enquanto, e o instalador recusa em vez de instalar algo que não vai funcionar.
+
+No macOS há uma diferença que vale saber antes: **o corte é por tempo, não por aplicativo.** No Windows o [WireSock](https://www.wiresock.net) manda só o processo do Discord pelo túnel; o macOS não tem equivalente disso sem uma extensão de rede assinada pela Apple. Então, nos poucos segundos em que o túnel completo está no ar — no clique do Go Live, ao entrar numa call —, o Mac inteiro sai pela saída. Fora desses segundos, só a conexão de controle passa por lá, e o resto da máquina nunca entra no túnel.
 
 **Discord para computador**, com Equicord ou Vencord injetado. Vesktop e Equibop não são suportados: eles trazem o mod embutido e não carregam de um checkout. Não funciona no navegador nem na extensão.
 
@@ -54,7 +56,18 @@ A única coisa que ele pergunta e você precisa ter em mãos é o **convite**.
 .\StreamFix-Installer.ps1 -ExitUrl "http://SEU.IP:8787/registrar" -ExitKey "<a pública da saída>"
 ```
 
-`-ExitKey` é a chave pública da saída. Ele não é obrigatório, mas vale a pena: o registro vai por HTTP puro, e essa chave é o que impede alguém no meio do caminho de devolver a *própria* saída e levar a sua mídia junto. Quem te mandou o convite pode te mandar ela também.
+No **macOS**, o mesmo instalador em shell:
+
+```bash
+./streamfix-installer.sh
+
+# apontando para uma saída que não é a padrão
+./streamfix-installer.sh --exit-url "http://SEU.IP:8787/registrar" --exit-key "<a pública da saída>"
+```
+
+Ele instala o `wireguard-tools` pelo Homebrew se faltar, escreve os dois perfis em `/etc/wireguard` e cria uma regra em `/etc/sudoers.d/streamfix` que libera, sem senha, **apenas** subir, derrubar e consultar esses dois perfis. Sem ela, cada clique de Go Live pediria a sua senha. A senha do Mac aparece algumas vezes durante a instalação, e nenhuma vez depois. Desinstalar (`--restore`) remove a regra junto.
+
+`-ExitKey` (ou `--exit-key`) é a chave pública da saída. Ele não é obrigatório, mas vale a pena: o registro vai por HTTP puro, e essa chave é o que impede alguém no meio do caminho de devolver a *própria* saída e levar a sua mídia junto. Quem te mandou o convite pode te mandar ela também.
 
 **Uma senha do Windows vai aparecer uma vez**, na instalação do WireSock. É o UAC do próprio instalador dele. O StreamFix não se eleva sozinho — se elevasse, a compilação rodaria como administrador e deixaria na pasta do mod arquivos que a sua conta não conseguiria apagar depois.
 
@@ -70,7 +83,7 @@ Nas settings do plugin:
 
 - **Exigir túnel** (padrão: ligado). Bloqueia o Go Live quando a mídia não está saindo pela sua saída, e diz o motivo na hora do clique. Sem isso o Discord recusa a transmissão do mesmo jeito — o que muda é onde você descobre. Com ele, você descobre no clique; sem ele, pelo amigo dizendo "tá preta".
 
-- **Perfil do túnel** (padrão: `streamfix-santiago`). O nome do perfil no WireSock. O instalador escreve; só mude se você renomeou o perfil.
+- **Perfil do túnel** (padrão: `streamfix-santiago` no Windows, `streamfix` no macOS). O nome do perfil no WireSock ou no `wg-quick`. O instalador escreve; só mude se você renomeou o perfil. No macOS o nome não pode passar de 15 caracteres — é um limite do próprio `wg-quick`, e um nome maior faz ele dizer que o perfil não existe.
 
 - **Endereço da saída**. O `host:porta` da sua saída. É contra ele que o plugin confere o que o Discord reporta, então um valor errado aqui recusa transmissão boa. O instalador preenche com o que a saída respondeu.
 
@@ -213,7 +226,9 @@ O split tunnel faz o que promete. O `Verifica-Tunel.ps1` roda a segunda metade d
 - **Quem opera a saída vê o seu tráfego do Discord.** Menos do que parece, porque vai dentro de TLS, mas é real. Aceite um convite de quem você confiaria com isso.
 - **Usar clientes modificados viola os Termos de Serviço do Discord.** Contornar a restrição de região também pode violar. O risco de punição é baixo, mas existe. Considere uma conta secundária.
 - **Nos instantes em que o túnel completo está no ar, ele leva o processo do Discord inteiro**, não só a transmissão — é o que o WireSock sabe separar. Fora deles, só a conexão de controle passa pela saída.
-- **Só Windows por enquanto.** Linux e macOS voltam quando o túnel ganhar uma implementação com `wg-quick`.
+- **No macOS, nesses mesmos instantes, ele leva a máquina inteira**, e não só o Discord: lá não há separação por aplicativo sem uma extensão de rede assinada pela Apple. São segundos por clique de Go Live, e fora deles nada além da conexão de controle passa pela saída.
+- **O instalador do macOS deixa uma regra de `sudo` na sua máquina**, em `/etc/sudoers.d/streamfix`. Ela libera, sem senha, apenas subir, derrubar e consultar os dois perfis do StreamFix — nada mais. Sem ela, cada clique de Go Live pediria a sua senha. Desinstalar remove a regra.
+- **Linux ainda não.** O controle do túnel já serve o Linux; falta o lado do instalador, e ele não será habilitado sem medição.
 - O plugin **não te deixa sem Discord**. Se a verificação dele falhar por qualquer motivo, ele libera e avisa, em vez de travar a transmissão.
 
 ---
@@ -252,7 +267,7 @@ installer/
 ├── Diagnostico-Tunel.ps1          # por que o túnel está de pé e nada passa por ele
 ├── Diagnostico-Tunel.bat          # o mesmo, com dois cliques
 ├── provisiona.mjs                 # mede MTU, gera chave, troca o convite, escreve o perfil
-└── streamfix-installer.sh         # Linux: recusa, por enquanto
+└── streamfix-installer.sh         # macOS: instala; Linux: recusa, por enquanto
 ```
 
 Veja [CONTRIBUTING.md](CONTRIBUTING.md) para rodar o projeto localmente, e [LICENSE](LICENSE) para os termos (GPL-3.0-or-later).
@@ -274,7 +289,7 @@ Media is UDP, which SOCKS cannot usefully carry and Electron's `session.setProxy
 
 Measured on 2026-09-11, tunnel up: Discord reported `159.112.151.37` (Santiago) as the local address of its media connection, read from inside the media engine, while a non-Discord process on the same machine in the same minute exited via `177.42.223.136` (Brazil). `Verifica-Tunel.ps1` runs the second half of that check on your machine — it exists because the worst failure mode here is the tunnel quietly taking the *whole* machine, which looks exactly like success.
 
-- Windows only for now (WireSock). Linux and macOS return when the tunnel gets a `wg-quick` implementation; the Linux installer refuses rather than installing something that cannot work.
+- Windows (WireSock) and macOS (`wg-quick`). On macOS the tunnel is split by time rather than by app: for the few seconds around a Go Live click the whole Mac exits through your exit node, because macOS has no per-app split without an Apple-signed network extension. The macOS installer also writes a narrow `/etc/sudoers.d/streamfix` rule so the plugin can switch profiles without prompting for a password; uninstalling removes it. Linux still refuses rather than installing something unmeasured.
 - Desktop Discord with Equicord or Vencord injected. Vesktop and Equibop are not supported by the installers, since they bundle the mod instead of loading it from a checkout.
 - The installer does everything in one pass: installs WireSock if missing, measures your path MTU, trades the invite for an address on the exit, writes the profile, builds and injects. The tunnel is set up **before** the plugin is enabled, so an interrupted install leaves you with no plugin rather than a plugin that looks ready and is not.
 - The installer does not self-elevate. Measured: every WireSock CLI operation it needs works unelevated; only installing WireSock requires admin, and winget raises that prompt itself.
