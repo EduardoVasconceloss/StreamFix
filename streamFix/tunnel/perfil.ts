@@ -50,6 +50,21 @@ export interface DadosPerfil {
     dns?: string;
     /** Segundos entre keepalives. Mantem o NAT aberto do lado de ca. */
     keepalive?: number;
+
+    /**
+     * Esta plataforma nao divide o tunel por aplicativo.
+     *
+     * E o caso do macOS: o `#@ws:AllowedApps` e uma extensao do WireSock, e o `wg-quick` nao tem
+     * equivalente -- dividir por aplicativo la exigiria uma Network Extension da Apple. Emitir a
+     * linha assim mesmo nao quebraria nada (o `wg-quick` ignora comentario), e seria pior do que
+     * inutil: o arquivo passaria a prometer uma restricao que ninguem aplica, e a primeira pessoa
+     * a ler o perfil acreditaria nela.
+     *
+     * **O que protege a maquina no macOS e o `destinos`**, e o corte por tempo -- o completo so
+     * fica de pe durante o emprestimo de segundos. Por isso a validacao de `apps` tambem sai:
+     * aqui uma lista vazia nao "levaria a maquina inteira", ela simplesmente nao existe.
+     */
+    semSplitPorApp?: boolean;
 }
 
 /**
@@ -106,16 +121,19 @@ export function gerarPerfil(dados: DadosPerfil): string {
         throw new Error(`perfil: MTU fora da faixa aceitavel: ${mtu}`);
     }
 
+    const semSplitPorApp = dados.semSplitPorApp === true;
     const apps = dados.apps ?? ["Discord"];
-    if (apps.length === 0) throw new Error("perfil: lista de apps vazia levaria a maquina inteira");
-    apps.forEach((app, i) => exigir(`apps[${i}]`, app));
+    if (!semSplitPorApp) {
+        if (apps.length === 0) throw new Error("perfil: lista de apps vazia levaria a maquina inteira");
+        apps.forEach((app, i) => exigir(`apps[${i}]`, app));
+    }
 
     const destinos = dados.destinos ?? "0.0.0.0/0";
     const keepalive = dados.keepalive ?? 25;
     const dns = dados.dns ?? "1.1.1.1";
     exigir("dns", dns);
 
-    return [
+    const linhas = [
         "[Interface]",
         `PrivateKey = ${dados.chavePrivada}`,
         `Address = ${dados.endereco}`,
@@ -127,11 +145,14 @@ export function gerarPerfil(dados: DadosPerfil): string {
         `Endpoint = ${dados.endpoint}`,
         `AllowedIPs = ${destinos}`,
         `PersistentKeepalive = ${keepalive}`,
-        "",
-        "# [Peer] WireSock extensions",
-        `#@ws:AllowedApps = ${apps.join(", ")}`,
         ""
-    ].join("\n");
+    ];
+
+    if (!semSplitPorApp) {
+        linhas.push("# [Peer] WireSock extensions", `#@ws:AllowedApps = ${apps.join(", ")}`, "");
+    }
+
+    return linhas.join("\n");
 }
 
 // ---------------------------------------------------------------------------------------------

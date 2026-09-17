@@ -230,3 +230,42 @@ test("a faixa de controle leva o gateway do Discord e o DNS do perfil, e nao a r
 test("o nome do perfil de controle e o do completo com -controle no fim", () => {
     assert.equal(perfilDeControle("streamfix-santiago"), "streamfix-santiago-controle");
 });
+
+// ---------------------------------------------------------------------------------------------
+// O perfil do macOS: sem split por aplicativo
+// ---------------------------------------------------------------------------------------------
+
+test("no macOS o perfil sai sem a linha de AllowedApps", () => {
+    // Emitir a linha nao quebraria nada -- o wg-quick ignora comentario -- e seria pior do que
+    // inutil: o arquivo prometeria uma restricao que ninguem aplica.
+    const texto = gerarPerfil({ ...BASE, semSplitPorApp: true });
+    assert.equal(/AllowedApps/.test(texto), false);
+    assert.equal(/WireSock extensions/.test(texto), false);
+});
+
+test("sem split por app, o AllowedIPs continua sendo a defesa -- e continua la", () => {
+    const texto = gerarPerfil({ ...BASE, semSplitPorApp: true, destinos: FAIXA_CONTROLE });
+    assert.match(texto, /^AllowedIPs = 162\.159\.128\.0\/17, 1\.1\.1\.1\/32$/m);
+});
+
+test("sem split por app, lista de apps vazia deixa de ser erro", () => {
+    // No Windows uma lista vazia levaria a maquina inteira, e por isso e recusada. No macOS nao
+    // existe split por aplicativo nenhum: a lista vazia nao significa "sem restricao", significa
+    // "esta dimensao nao existe aqui".
+    assert.doesNotThrow(() => gerarPerfil({ ...BASE, semSplitPorApp: true, apps: [] }));
+    assert.throws(
+        () => gerarPerfil({ ...BASE, apps: [] }),
+        /levaria a maquina inteira/,
+        "no Windows a recusa continua valendo"
+    );
+});
+
+test("o perfil do macOS continua terminando em linha vazia", () => {
+    // Nao e estetica: um arquivo sem quebra no fim ja custou uma noite em outros projetos, e o
+    // teste e barato.
+    assert.equal(gerarPerfil({ ...BASE, semSplitPorApp: true }).endsWith("\n"), true);
+});
+
+test("o padrao continua sendo COM split por app: so o macOS pede o contrario", () => {
+    assert.match(gerarPerfil(BASE), /^#@ws:AllowedApps = Discord$/m);
+});

@@ -111,6 +111,49 @@ describe("provisionamento", () => {
         assert.ok(existsSync(arquivo));
     });
 
+    test("no macOS o perfil de controle tem nome curto e nenhum AllowedApps", async () => {
+        // As duas coisas que o wg-quick forca (medido em 17/09): nome de ate 15 caracteres, e
+        // nenhum split por aplicativo -- `#@ws:AllowedApps` e extensao do WireSock, e emiti-lo
+        // aqui prometeria uma restricao que ninguem aplica.
+        const arquivo = join(pasta, "streamfix.conf");
+        const r = await provisionar(CONVITE_BOM, ["--arquivo", arquivo, "--plataforma", "darwin"]);
+
+        assert.equal(r.codigo, 0, r.saida + r.erro);
+        assert.equal(r.json.perfil, "streamfix");
+        assert.equal(r.json.perfilControle, "streamfix-ctl", "e nao streamfix-controle, que tem 17");
+        assert.ok(r.json.perfilControle.length <= 15);
+
+        const completo = readFileSync(arquivo, "utf8");
+        const controle = readFileSync(r.json.arquivoControle, "utf8");
+        assert.equal(/AllowedApps/.test(completo), false, "o completo nao pode prometer split por app");
+        assert.equal(/AllowedApps/.test(controle), false);
+
+        // O que protege a maquina no macOS sao os destinos, e eles continuam la.
+        assert.match(completo, /^AllowedIPs = 0\.0\.0\.0\/0$/m);
+        assert.match(controle, /^AllowedIPs = 162\.159\.128\.0\/17, 1\.1\.1\.1\/32$/m);
+    });
+
+    test("no macOS, um nome de perfil longo demais e recusado antes de gastar o convite", async () => {
+        // Deixar passar daria um par de arquivos que o wg-quick recusaria depois, dizendo que o
+        // arquivo nao existe -- e o convite ja teria sido consumido.
+        const arquivo = join(pasta, "streamfix-santiago.conf");
+        const r = await provisionar(CONVITE_BOM, ["--arquivo", arquivo, "--plataforma", "darwin"]);
+
+        assert.equal(r.json.ok, false);
+        assert.match(r.json.erro, /15/);
+        assert.equal(existsSync(arquivo), false, "nao pode sobrar arquivo de um perfil recusado");
+    });
+
+    test("no Windows o mesmo nome longo continua valendo", async () => {
+        // A recusa acima e do wg-quick, nao nossa: o WireSock aceita nome longo sem reclamar.
+        const arquivo = join(pasta, "streamfix-santiago-win.conf");
+        const r = await provisionar(CONVITE_BOM, ["--arquivo", arquivo, "--plataforma", "win32"]);
+
+        assert.equal(r.json.ok, true, r.json.erro);
+        assert.equal(r.json.perfilControle, "streamfix-santiago-win-controle");
+        assert.match(readFileSync(arquivo, "utf8"), /^#@ws:AllowedApps = /m);
+    });
+
     test("a chave privada nunca aparece na saida, so dentro do arquivo", async () => {
         // O modo de falha a evitar e a privada vazar para o log do instalador, que as pessoas
         // colam em canal de suporte quando algo da errado.

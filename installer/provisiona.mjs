@@ -33,6 +33,7 @@ import {
     comandoPing, FAIXA_CONTROLE, gerarPerfil, medirMtuComAlternativas, mtuDoTunel, perfilDeControle,
     respostaChegou
 } from "../streamFix/tunnel/perfil.ts";
+import { nomeValido, perfilDeControleCurto } from "../streamFix/tunnel/controle-wg.ts";
 import { registrarNaSaida } from "../provisionamento/cliente.ts";
 
 const PRAZO_PING_MS = 5000;
@@ -110,8 +111,28 @@ async function principal() {
     if (!arquivo) responde({ ok: false, erro: "falta --arquivo" });
 
     // O nome do perfil no WireSock vem do NOME DO ARQUIVO, nao do que se pede no import.
-    // Descoberto na fase 3, e e por isso que quem chama escolhe o arquivo com cuidado.
+    // Descoberto na fase 3, e e por isso que quem chama escolhe o arquivo com cuidado. O
+    // `wg-quick` do macOS tambem nomeia pelo arquivo, entao a regra vale nos dois.
     const perfil = basename(arquivo).replace(/\.conf$/i, "");
+
+    // O macOS muda duas coisas no perfil, e as duas vem de `controle-wg.ts`:
+    //
+    //   - **o nome do perfil de controle e curto.** O `wg-quick` so aceita ate 15 caracteres, e
+    //     o `-controle` do Windows sozinho come 9 deles (medido em 17/09).
+    //   - **nao ha split por aplicativo.** O `#@ws:AllowedApps` e extensao do WireSock; emiti-lo
+    //     aqui prometeria uma restricao que ninguem aplica.
+    //
+    // `--plataforma` existe para o teste poder exercitar o ramo do macOS rodando em qualquer
+    // sistema, do mesmo jeito que o OS_NAME do instalador de shell.
+    const ehMac = (opcao("plataforma") ?? platform) === "darwin";
+
+    if (ehMac && !nomeValido(perfil)) {
+        responde({
+            ok: false,
+            erro: `o wg-quick nao aceita o perfil "${perfil}": ele so aceita nomes de ate 15`
+                + ` caracteres, e recusaria dizendo que o arquivo nao existe`
+        });
+    }
 
     const convite = await lerConvite();
     if (convite.length === 0) responde({ ok: false, erro: "convite vazio: nada chegou pela entrada padrao" });
@@ -161,14 +182,15 @@ async function principal() {
         // Todo perfil gerado ate 11/09 saiu assim. Nao apareceu em teste nenhum porque a unica
         // maquina onde se testava de verdade usava um perfil escrito a mao, anterior a isto.
         // O padrao de `gerarPerfil` -- 0.0.0.0/0 -- sempre esteve certo; o erro era sobrescreve-lo.
-        apps
+        apps,
+        semSplitPorApp: ehMac
     };
 
     // Tunel em dois niveis: o mesmo registro vira dois perfis. O completo, com o padrao de
     // `gerarPerfil`, e o de controle, com so a FAIXA_CONTROLE. Mesma chave e mesmo endereco --
     // e isso que deixa o gateway do Discord sobreviver a troca entre eles (pesquisa, 12h). Um
     // convite continua valendo um peer.
-    const perfilControle = perfilDeControle(perfil);
+    const perfilControle = ehMac ? perfilDeControleCurto(perfil) : perfilDeControle(perfil);
     const arquivoControle = join(dirname(arquivo), `${perfilControle}.conf`);
     const escritos = [];
     try {
