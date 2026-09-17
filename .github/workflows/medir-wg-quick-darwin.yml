@@ -42,6 +42,28 @@ jobs:
           echo '--- versao ---'
           wg --version
 
+      # Descoberto na primeira execucao desta medicao (17/09), e nao esta documentado em lugar
+      # nenhum: o wg-quick so aceita nome de perfil que case com `^[a-zA-Z0-9_=+.-]{1,15}$`.
+      # QUINZE caracteres. Um nome maior nem chega a ser procurado nos CONFIG_SEARCH_PATHS -- ele
+      # cai direto no `does not exist`, com o arquivo ali, o que da uma mensagem que aponta para
+      # o lugar errado.
+      #
+      # Isso atinge a producao em cheio: o `streamfix-santiago` de hoje tem 18 caracteres, e o
+      # `streamfix-santiago-controle` que o `perfilDeControle()` de perfil.ts deriva tem 27. O
+      # sufixo `-controle` sozinho ja come 9 dos 15 disponiveis, o que praticamente decide que o
+      # macOS precisa de um esquema de nomes proprio.
+      #
+      # Por isso o resto desta medicao usa `streamfix` e `streamfix-ctl`: sao os candidatos.
+      - name: O limite de tamanho do nome do perfil
+        run: |
+          echo '--- a regra, do proprio script ---'
+          grep -nE '\{1,15\}|CONFIG_FILE =~' "$(which wg-quick)" | head -10
+          echo '--- quem cabe e quem nao cabe ---'
+          for nome in streamfix-santiago streamfix-santiago-controle streamfix streamfix-ctl sfx-santiago; do
+            if [[ "$nome" =~ ^[a-zA-Z0-9_=+.-]{1,15}$ ]]; then veredito="CABE"; else veredito="NAO CABE"; fi
+            printf '%-30s %2d caracteres  %s\n' "$nome" "${#nome}" "$veredito"
+          done
+
       # Duas perguntas aqui, e as duas decidem a forma do `controle-wg.ts`:
       #
       #   1. `wg show <perfil>` resolve o NOME DO PERFIL no Darwin? No Linux o argumento e o nome
@@ -56,13 +78,15 @@ jobs:
         run: |
           set +e
           echo '--- wg show num perfil que nao existe ---'
-          wg show streamfix-santiago; echo "exit=$?"
+          wg show streamfix; echo "exit=$?"
           echo '--- wg show interfaces, sem nenhuma ---'
           wg show interfaces; echo "exit=$?"
           echo '--- wg-quick down de quem nao esta de pe ---'
-          sudo wg-quick down streamfix-santiago; echo "exit=$?"
+          sudo wg-quick down streamfix; echo "exit=$?"
           echo '--- o diretorio de estado existe? ---'
           ls -la /var/run/wireguard/ 2>&1; echo "exit=$?"
+          # O passo mede; ele nao julga. Um comando que falha aqui e DADO, nao quebra.
+          exit 0
 
       # Um peer que nao existe, de proposito. E o caso que mais importa medir, porque e a
       # diferenca estrutural entre os dois CLIs: o `wiresock-connect-cli connect` BLOQUEIA ate o
@@ -92,8 +116,8 @@ jobs:
           # completo. No macOS o completo nao tem AllowedApps -- o corte la e por tempo, nao por
           # aplicativo -- entao ele e 0.0.0.0/0 de verdade, e o que esta medicao precisa mostrar
           # e o estrago que isso faz na tabela de rotas a cada emprestimo.
-          escrever streamfix-santiago-controle '162.159.128.0/17, 1.1.1.1/32'
-          escrever streamfix-santiago '0.0.0.0/0'
+          escrever streamfix-ctl '162.159.128.0/17, 1.1.1.1/32'
+          escrever streamfix '0.0.0.0/0'
           ls -la /etc/wireguard/
 
       - name: Rota padrao ANTES de qualquer tunel
@@ -103,28 +127,32 @@ jobs:
         run: |
           set +e
           echo '--- wg-quick up (verbose: ele ecoa cada comando que executa) ---'
-          sudo wg-quick up streamfix-santiago-controle; echo "exit=$?"
+          sudo wg-quick up streamfix-ctl; echo "exit=$?"
           echo '--- wg show <perfil>: o nome resolve? ---'
-          wg show streamfix-santiago-controle; echo "exit=$?"
+          wg show streamfix-ctl; echo "exit=$?"
           echo '--- wg show interfaces ---'
           wg show interfaces
           echo '--- o arquivo de mapeamento nome -> utunN ---'
           ls -la /var/run/wireguard/; cat /var/run/wireguard/*.name 2>&1
           echo '--- allowed-ips aplicados: o analogo do AllowedApps do WireSock ---'
-          echo "por nome:"; wg show streamfix-santiago-controle allowed-ips; echo "exit=$?"
+          echo "por nome:"; wg show streamfix-ctl allowed-ips; echo "exit=$?"
           echo "por utun:"; wg show all allowed-ips
           echo '--- handshake: com endpoint morto tem de estar em 0 ---'
           wg show all latest-handshakes
           wg show all transfer
           echo '--- a rota padrao mudou? (nao deveria: so duas faixas) ---'
           netstat -rn -f inet | head -15
+          # O passo mede; ele nao julga. Um comando que falha aqui e DADO, nao quebra.
+          exit 0
 
       - name: Derrubar o controle
         run: |
           set +e
-          sudo wg-quick down streamfix-santiago-controle; echo "exit=$?"
+          sudo wg-quick down streamfix-ctl; echo "exit=$?"
           wg show interfaces
           ls -la /var/run/wireguard/ 2>&1
+          # O passo mede; ele nao julga. Um comando que falha aqui e DADO, nao quebra.
+          exit 0
 
       # A pergunta desta etapa: quanto da tabela de rotas o `0.0.0.0/0` reescreve, e o que sobra
       # quando ele sai. No macOS o emprestimo do completo acontece varias vezes por sessao (a
@@ -133,25 +161,29 @@ jobs:
       - name: Subir o COMPLETO (0.0.0.0/0) e medir o estrago na tabela de rotas
         run: |
           set +e
-          sudo wg-quick up streamfix-santiago; echo "exit=$?"
+          sudo wg-quick up streamfix; echo "exit=$?"
           echo '--- rota padrao COM o completo no ar ---'
           netstat -rn -f inet | head -20
           echo '--- allowed-ips ---'
-          wg show streamfix-santiago allowed-ips
+          wg show streamfix allowed-ips
           echo '--- handshake (endpoint morto: 0) ---'
-          wg show streamfix-santiago latest-handshakes
+          wg show streamfix latest-handshakes
           echo '--- os dois perfis ao mesmo tempo? ---'
-          sudo wg-quick up streamfix-santiago-controle; echo "exit=$?"
+          sudo wg-quick up streamfix-ctl; echo "exit=$?"
           wg show interfaces
+          # O passo mede; ele nao julga. Um comando que falha aqui e DADO, nao quebra.
+          exit 0
 
       - name: Derrubar tudo e conferir que a rota padrao voltou
         run: |
           set +e
-          sudo wg-quick down streamfix-santiago; echo "exit=$?"
-          sudo wg-quick down streamfix-santiago-controle; echo "exit=$?"
+          sudo wg-quick down streamfix; echo "exit=$?"
+          sudo wg-quick down streamfix-ctl; echo "exit=$?"
           wg show interfaces
           echo '--- rota padrao DEPOIS ---'
           netstat -rn -f inet | head -15
+          # O passo mede; ele nao julga. Um comando que falha aqui e DADO, nao quebra.
+          exit 0
 
       # A troca de perfil e a operacao mais frequente do plugin, e no Windows ela custa ~1,25 s
       # (medido em 12/09). Se no macOS ela custar muito mais, o emprestimo de segundos fica caro
@@ -159,17 +191,19 @@ jobs:
       - name: Quanto custa trocar de perfil
         run: |
           set +e
-          sudo wg-quick up streamfix-santiago-controle
+          sudo wg-quick up streamfix-ctl
           for i in 1 2 3; do
             inicio=$(python3 -c 'import time; print(time.time())')
-            sudo wg-quick down streamfix-santiago-controle >/dev/null 2>&1
-            sudo wg-quick up streamfix-santiago >/dev/null 2>&1
-            sudo wg-quick down streamfix-santiago >/dev/null 2>&1
-            sudo wg-quick up streamfix-santiago-controle >/dev/null 2>&1
+            sudo wg-quick down streamfix-ctl >/dev/null 2>&1
+            sudo wg-quick up streamfix >/dev/null 2>&1
+            sudo wg-quick down streamfix >/dev/null 2>&1
+            sudo wg-quick up streamfix-ctl >/dev/null 2>&1
             fim=$(python3 -c 'import time; print(time.time())')
             python3 -c "print(f'ciclo $i (controle->completo->controle): {($fim - $inicio) * 1000:.0f} ms')"
           done
-          sudo wg-quick down streamfix-santiago-controle
+          sudo wg-quick down streamfix-ctl
+          # O passo mede; ele nao julga. Um comando que falha aqui e DADO, nao quebra.
+          exit 0
 
       # O caminho que a producao vai usar de verdade: o plugin nao pode pedir senha no clique do
       # Go Live, entao o instalador escreve uma regra restrita em /etc/sudoers.d.
@@ -186,7 +220,7 @@ jobs:
           caminho_wg_quick="$(which wg-quick)"
           usuario="$(whoami)"
           sudo tee /etc/sudoers.d/streamfix >/dev/null <<EOF
-          $usuario ALL=(root) NOPASSWD: $caminho_wg_quick up streamfix-santiago, $caminho_wg_quick down streamfix-santiago, $caminho_wg_quick up streamfix-santiago-controle, $caminho_wg_quick down streamfix-santiago-controle
+          $usuario ALL=(root) NOPASSWD: $caminho_wg_quick up streamfix, $caminho_wg_quick down streamfix, $caminho_wg_quick up streamfix-ctl, $caminho_wg_quick down streamfix-ctl
           EOF
           sudo chmod 440 /etc/sudoers.d/streamfix
           echo '--- visudo aceita a regra? ---'
@@ -194,11 +228,13 @@ jobs:
           echo '--- o que esta autorizado sem senha (esperado: o ALL do runner ofuscando a nossa regra) ---'
           sudo -n -l 2>&1 | tail -20
           echo '--- o autorizado passa ---'
-          sudo -n "$caminho_wg_quick" up streamfix-santiago-controle; echo "exit=$?"
-          sudo -n "$caminho_wg_quick" down streamfix-santiago-controle; echo "exit=$?"
+          sudo -n "$caminho_wg_quick" up streamfix-ctl; echo "exit=$?"
+          sudo -n "$caminho_wg_quick" down streamfix-ctl; echo "exit=$?"
           echo '--- inconclusivo aqui, ver o comentario da etapa: o runner autoriza tudo ---'
           sudo -n "$caminho_wg_quick" up qualquer-outro; echo "exit=$?"
 
           # Nao deixar a regra para tras: as etapas seguintes (se alguem acrescentar alguma) e
           # qualquer cache de runner nao devem herdar uma concessao de privilegio.
           sudo rm -f /etc/sudoers.d/streamfix
+          # O passo mede; ele nao julga. Um comando que falha aqui e DADO, nao quebra.
+          exit 0
