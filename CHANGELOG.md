@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.4.1](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.4.0...v2.4.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* a captura penduraria o script, e o -i any nao existe no macOS ([d984404](https://github.com/EduardoVasconceloss/StreamFix/commit/d98440434f7958b8117a561f3ac94c6d91d28312))
+* a linha da versao saia com a quebra literal no meio ([37aad06](https://github.com/EduardoVasconceloss/StreamFix/commit/37aad0617b77ff8f03cf17e38be4a43be9e69691))
+* o lsof da medicao combinava os filtros com OU, nao com E ([ba0b53b](https://github.com/EduardoVasconceloss/StreamFix/commit/ba0b53b6b9b3d5477c9ad8c84d82fc0dc6343375))
+* o wg responde em duas colunas por interface, nao tres ([25db5e1](https://github.com/EduardoVasconceloss/StreamFix/commit/25db5e1b3e0afaa9e4f23877daad09c368602d34))
+* o wg-quick exige bash 4+, e o macOS traz o 3.2 ([70e0ae9](https://github.com/EduardoVasconceloss/StreamFix/commit/70e0ae90a0167e6c593d7a59c23e4178b8f41416))
+
 ## [2.4.0](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.3.1...v2.4.0) (2026-09-20)
 
 
