@@ -90,10 +90,18 @@ if [[ ! "$resposta" =~ ^[sSyY] ]]; then
 else
     passo "lendo os sockets UDP do Discord (vai pedir a sua senha: o lsof precisa dela para ver processo de outro dono)"
 
+    # **`-a` nao e opcional**, e a primeira execucao desta medicao (20/09) provou. No lsof,
+    # varios filtros de selecao sao combinados com OU, nao com E: sem ele, `-iUDP -c Discord`
+    # pede "todo socket UDP da maquina OU qualquer coisa do Discord", e a saida vem com o
+    # launchd, o airportd, o mDNSResponder e cada arquivo aberto do Discord -- inclusive as
+    # conexoes TCP dele. A extracao seguinte entao pegaria o IP do GATEWAY, que e TCP, e o
+    # reportaria como destino de midia: resultado errado com cara de certo, que e o pior que
+    # esta medicao podia produzir.
+    #
     # -c Discord casa por prefixo do nome do processo, o que pega tambem os processos
     # auxiliares do Electron ("Discord Helper"), que sao justamente onde a midia vive.
     # -nP: nao resolve nome nem porta, porque queremos o numero cru.
-    UDP="$(sudo lsof -nP -iUDP -c Discord 2>/dev/null)"
+    UDP="$(sudo lsof -nP -a -iUDP -c Discord 2>/dev/null)"
 
     if [ -z "$UDP" ]; then
         ruim "Nenhum socket UDP do Discord. Voce esta mesmo numa call? O Discord esta aberto?"
@@ -105,6 +113,7 @@ else
         # interessa o lado direito da seta, e so o que for IPv4 publico.
         passo 'destinos remotos, extraidos das linhas acima'
         DESTINOS="$(printf '%s\n' "$UDP" \
+            | grep ' UDP ' \
             | grep -oE '\->[0-9]{1,3}(\.[0-9]{1,3}){3}' \
             | sed 's/^->//' \
             | sort -u)"
