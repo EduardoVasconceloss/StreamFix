@@ -30,7 +30,7 @@
 // leitura de qualquer arquivo da maquina, o que e um preco absurdo por um mapeamento.
 //
 // Entao a identidade de um perfil aqui e **o conjunto de destinos que a interface dele carrega**,
-// lido de `wg show all allowed-ips`. Funciona porque o tunel em dois niveis ja garante que os
+// lido de `wg show <utunN> allowed-ips`. Funciona porque o tunel em dois niveis ja garante que os
 // dois perfis carregam conjuntos diferentes -- e essa e a propria definicao dos niveis: o
 // controle leva a `FAIXA_CONTROLE`, o completo leva tudo.
 //
@@ -158,28 +158,42 @@ export function mesmosDestinos(a: string[], b: string[]): boolean {
 }
 
 /**
- * Le `wg show all allowed-ips`.
+ * Le `wg show interfaces`.
  *
- * O formato e `interface<TAB>chave-publica-do-peer<TAB>destinos`, uma linha por peer. Como os
- * nossos perfis tem um peer so, cada interface aparece uma vez -- mas a leitura acumula por
- * interface mesmo assim, porque um perfil com dois peers nao seria erro, seria so outra coisa.
- *
- * Linha malformada e ignorada em silencio, do mesmo jeito que `mensagensDoLog` ignora linha que
- * nao e JSON: e ruido, nao erro.
+ * Medido em 20/09 num Mac: uma interface sai sozinha numa linha; duas saem na mesma linha,
+ * separadas por espaco (`utun4 utun5`). Separar por qualquer espaco em branco cobre os dois.
  */
-export function destinosPorInterface(saida: string): Map<string, string[]> {
-    const fora = new Map<string, string[]>();
+export function lerInterfaces(saida: string): string[] {
+    return (saida ?? "")
+        .split(/\s+/)
+        .map(s => s.trim())
+        .filter(s => s.length > 0);
+}
+
+/**
+ * Le `wg show <utunN> allowed-ips`, os destinos que aquela interface carrega.
+ *
+ * **Duas colunas, nao tres.** Medido em 20/09: perguntando por UMA interface, o `wg` responde
+ * `chave-publica-do-peer<TAB>destinos` e nao repete o nome da interface -- ele so o prefixa
+ * quando se pergunta por `all`.
+ *
+ * Isto importa mais do que parece. A versao anterior perguntava por `all` e supunha tres
+ * colunas, e essa suposicao nunca tinha sido medida: no runner de 17/09 a pergunta morreu em
+ * "Permission denied" antes de imprimir qualquer coisa. Se o formato do `all` fosse outro, o
+ * mapa sairia vazio, nenhuma interface casaria com nenhum perfil, e o controle recusaria toda
+ * transmissao boa dizendo que o tunel nao esta de pe. Perguntar interface por interface troca
+ * uma suposicao por um formato medido, ao custo de um processo a mais por interface.
+ *
+ * Acumula todos os peers: um perfil de um peer so e o nosso caso, nao uma garantia.
+ */
+export function destinosDaInterface(saida: string): string[] {
+    let fora: string[] = [];
     for (const linha of (saida ?? "").split(/\r?\n/)) {
         const partes = linha.split("\t");
-        if (partes.length < 3) continue;
-        const iface = partes[0].trim();
-        if (iface.length === 0) continue;
-        const destinos = normalizarDestinos(partes.slice(2).join(" "));
-        if (destinos.length === 0) continue;
-        const ja = fora.get(iface) ?? [];
-        fora.set(iface, [...ja, ...destinos].sort());
+        if (partes.length < 2) continue;
+        fora = [...fora, ...normalizarDestinos(partes.slice(1).join(" "))];
     }
-    return fora;
+    return fora.sort();
 }
 
 /**
@@ -200,17 +214,19 @@ export function interfaceComDestinos(
 }
 
 /**
- * Le `wg show all latest-handshakes` e diz se a interface ja fechou handshake.
+ * Le `wg show <utunN> latest-handshakes` e diz se aquela interface ja fechou handshake.
  *
- * O formato e `interface<TAB>chave<TAB>timestamp-unix`, e `0` significa "nunca". Este e o unico
- * sinal que distingue um tunel de pe de um tunel que so *existe* -- ver achado 4 no topo.
+ * **Duas colunas**, pela mesma razao de `destinosDaInterface`: `chave<TAB>timestamp-unix`, com
+ * `0` significando "nunca". Medido em 20/09, contra um peer que nao existe -- e deu `0`, que e
+ * a confirmacao que faltava do achado 4.
+ *
+ * Este e o unico sinal que distingue um tunel de pe de um tunel que so *existe*.
  */
-export function fechouHandshake(saida: string, iface: string): boolean {
+export function fechouHandshake(saida: string): boolean {
     for (const linha of (saida ?? "").split(/\r?\n/)) {
         const partes = linha.split("\t");
-        if (partes.length < 3) continue;
-        if (partes[0].trim() !== iface) continue;
-        const quando = Number.parseInt(partes[2].trim(), 10);
+        if (partes.length < 2) continue;
+        const quando = Number.parseInt(partes[1].trim(), 10);
         if (Number.isFinite(quando) && quando > 0) return true;
     }
     return false;
@@ -274,14 +290,34 @@ export function controleWgQuick(opcoes: OpcoesControleWg): Controle {
     const rodar = (...args: string[]) =>
         opcoes.executar("sudo", ["-n", ...args], { tempoLimiteMs: PRAZO_CURTO_MS });
 
-    /** `wg show all allowed-ips`, ja lido. Mapa vazio quando nao deu para perguntar. */
+    /**
+     * O que cada interface no ar esta carregando. `null` quando nao deu para perguntar.
+     *
+     * Duas etapas, e nao uma: lista as interfaces, depois pergunta os destinos de cada uma. E
+     * mais processos do que um `wg show all` unico, e em troca os dois formatos lidos aqui foram
+     * medidos num Mac de verdade (20/09) -- o do `all` nunca foi, porque no runner de 17/09 ele
+     * morreu em "Permission denied" antes de imprimir.
+     */
     async function mapaAtual(): Promise<Map<string, string[]> | null> {
+        let ifaces: string[];
         try {
-            return destinosPorInterface(await rodar(wg, "show", "all", "allowed-ips"));
+            ifaces = lerInterfaces(await rodar(wg, "show", "interfaces"));
         } catch {
             // Sem regra de sudoers, `wg` ausente, servico fora. Nada disso e "o tunel esta fora".
             return null;
         }
+
+        const mapa = new Map<string, string[]>();
+        for (const iface of ifaces) {
+            try {
+                mapa.set(iface, destinosDaInterface(await rodar(wg, "show", iface, "allowed-ips")));
+            } catch {
+                // Uma interface que some entre a listagem e a pergunta nao e "nenhum destino":
+                // e nao saber. Responder com um mapa incompleto faria o perfil parecer fora.
+                return null;
+            }
+        }
+        return mapa;
     }
 
     /** O `utunN` que este perfil esta usando agora, ou `null`. */
@@ -306,8 +342,8 @@ export function controleWgQuick(opcoes: OpcoesControleWg): Controle {
         if (iface === "desconhecido") return "desconhecido";
         if (iface === null) return "fora";
         try {
-            const hs = await rodar(wg, "show", "all", "latest-handshakes");
-            return fechouHandshake(hs, iface) ? "conectado" : "fora";
+            const hs = await rodar(wg, "show", iface, "latest-handshakes");
+            return fechouHandshake(hs) ? "conectado" : "fora";
         } catch {
             return "desconhecido";
         }
@@ -318,7 +354,7 @@ export function controleWgQuick(opcoes: OpcoesControleWg): Controle {
         const limite = agora() + prazoHandshake;
         for (;;) {
             try {
-                if (fechouHandshake(await rodar(wg, "show", "all", "latest-handshakes"), iface)) {
+                if (fechouHandshake(await rodar(wg, "show", iface, "latest-handshakes"))) {
                     return true;
                 }
             } catch {
