@@ -63,8 +63,7 @@ exec > >(tee -a "$SAIDA") 2>&1
 
 printf '\n  %sMedicao do StreamFix para macOS%s\n' "$C_CYAN$C_BOLD" "$C_OFF"
 printf '  %sNao instala nada. Nao mexe no seu Discord.%s\n' "$C_DIM" "$C_OFF"
-printf '  %sVersao %s%s
-' "$C_DIM" "$VERSAO" "$C_OFF"
+printf '  %sVersao %s%s\n' "$C_DIM" "$VERSAO" "$C_OFF"
 printf '  %sSaida: %s%s\n' "$C_DIM" "$SAIDA" "$C_OFF"
 
 if [ "$(uname -s)" != "Darwin" ]; then
