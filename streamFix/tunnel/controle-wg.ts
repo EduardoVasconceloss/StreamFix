@@ -63,6 +63,25 @@ export const WG_QUICK_PADRAO = "/opt/homebrew/bin/wg-quick";
 export const WG_PADRAO = "/opt/homebrew/bin/wg";
 
 /**
+ * O `wg-quick` exige bash 4+, e o macOS traz o 3.2 -- entao ele e sempre chamado por um
+ * interpretador explicito, nunca direto.
+ *
+ * Medido em 20/09, num Mac de verdade: `sudo wg-quick up` responde "Version mismatch: bash 3
+ * detected, when bash 4+ required" e nao sobe nada. A Apple parou no bash 3.2 por licenca, e
+ * quem tem um bash moderno e o Homebrew.
+ *
+ * **Por que a medicao no CI nao pegou isto.** O runner do GitHub ja tem o bash do Homebrew no
+ * PATH, entao la o `#!/usr/bin/env bash` do wg-quick encontrava um bash 5 e tudo funcionava. Num
+ * Mac comum, sob `sudo`, o PATH e higienizado e o `env bash` acha o `/bin/bash` 3.2 da Apple. O
+ * modo de falha so existe na combinacao "Mac de verdade + sudo" -- que e exatamente a combinacao
+ * em que o StreamFix roda.
+ *
+ * Chamar o interpretador pelo caminho absoluto tambem e o que deixa a regra de sudoers ser
+ * exata: ela lista `<bash> <wg-quick> up <perfil>`, sem curinga nenhum.
+ */
+export const BASH4_PADRAO = "/opt/homebrew/bin/bash";
+
+/**
  * Onde o instalador escreve os perfis. E o primeiro dos `CONFIG_SEARCH_PATHS` do `wg-quick`
  * (`/etc/wireguard`, `/usr/local/etc/wireguard`, `/opt/homebrew/etc/wireguard`), e o unico dos
  * tres que nao muda com a arquitetura.
@@ -226,6 +245,8 @@ export interface OpcoesControleWg {
     perfis: Record<string, string>;
     wgQuick?: string;
     wg?: string;
+    /** O bash 4+ que executa o `wg-quick`. Ver `BASH4_PADRAO`. */
+    bash?: string;
     dirPerfis?: string;
     dormir?: (ms: number) => Promise<void>;
     agora?: () => number;
@@ -237,6 +258,7 @@ const espera = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 export function controleWgQuick(opcoes: OpcoesControleWg): Controle {
     const wgQuick = opcoes.wgQuick ?? WG_QUICK_PADRAO;
     const wg = opcoes.wg ?? WG_PADRAO;
+    const bash = opcoes.bash ?? BASH4_PADRAO;
     const dirPerfis = opcoes.dirPerfis ?? DIR_PERFIS;
     const dormir = opcoes.dormir ?? espera;
     const agora = opcoes.agora ?? Date.now;
@@ -333,7 +355,7 @@ export function controleWgQuick(opcoes: OpcoesControleWg): Controle {
         }
 
         try {
-            await rodar(wgQuick, "up", perfil);
+            await rodar(bash, wgQuick, "up", perfil);
         } catch (e) {
             return { ok: false, motivo: `falha ao subir o tunel: ${(e as Error)?.message ?? e}` };
         }
@@ -373,7 +395,7 @@ export function controleWgQuick(opcoes: OpcoesControleWg): Controle {
     /** Derruba um perfil especifico. Derrubar o que ja esta fora nao e erro. */
     async function derrubarPerfil(perfil: string): Promise<void> {
         try {
-            await rodar(wgQuick, "down", perfil);
+            await rodar(bash, wgQuick, "down", perfil);
         } catch {
             // Medido em 17/09: `down` de quem nao esta de pe devolve 1 com "does not exist".
             // Nao ha nada melhor a fazer aqui, e nao e falha.

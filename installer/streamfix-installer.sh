@@ -1252,18 +1252,61 @@ SUDOERS_FILE="/etc/sudoers.d/streamfix"
 TUNNEL_PROFILE="streamfix"
 TUNNEL_PROFILE_CTL="streamfix-ctl"
 
+# O bash 4+ que executa o wg-quick. Descoberto na instalacao e usado em todas as chamadas.
+BASH4=""
+
 macos_ensure_wireguard() {
-    have wg-quick && have wg && return 0
+    if ! have wg-quick || ! have wg; then
+        have brew || fail "Preciso do wireguard-tools e nao achei o Homebrew para instala-lo. Instale o Homebrew em https://brew.sh e rode este instalador de novo."
 
-    have brew || fail "Preciso do wireguard-tools e nao achei o Homebrew para instala-lo. Instale o Homebrew em https://brew.sh e rode este instalador de novo."
+        step 'Instalando o wireguard-tools (so o utilitario de linha de comando)'
+        brew install wireguard-tools >/dev/null 2>&1             || fail 'O brew nao conseguiu instalar o wireguard-tools.'
 
-    step 'Instalando o wireguard-tools (so o utilitario de linha de comando)'
-    brew install wireguard-tools >/dev/null 2>&1 \
-        || fail 'O brew nao conseguiu instalar o wireguard-tools.'
+        have wg-quick && have wg             || fail 'O brew terminou e o wg-quick nao apareceu no PATH.'
+        ok 'wireguard-tools instalado.'
+    fi
 
-    have wg-quick && have wg \
-        || fail 'O brew terminou e o wg-quick nao apareceu no PATH.'
-    ok 'wireguard-tools instalado.'
+    macos_ensure_bash4
+}
+
+# **O wg-quick exige bash 4+, e o macOS traz o 3.2.**
+#
+# Medido em 20/09, num Mac de verdade: `sudo wg-quick up` responde "Version mismatch: bash 3
+# detected, when bash 4+ required" e nao sobe nada. A Apple parou no bash 3.2 por licenca.
+#
+# Por que a medicao no CI nao pegou: o runner do GitHub ja tem o bash do Homebrew no PATH, entao
+# la o `#!/usr/bin/env bash` do wg-quick achava um bash 5. Num Mac comum, sob `sudo`, o PATH e
+# higienizado e o `env bash` acha o /bin/bash 3.2 da Apple. O modo de falha so existe na
+# combinacao "Mac de verdade + sudo" -- que e exatamente a combinacao em que o StreamFix roda.
+#
+# A saida e chamar o interpretador pelo caminho absoluto, e nunca depender do PATH do sudo. Isso
+# tambem e o que deixa a regra de sudoers ser exata, sem curinga nenhum.
+macos_ensure_bash4() {
+    local candidato
+    for candidato in "$(brew --prefix 2>/dev/null)/bin/bash" /opt/homebrew/bin/bash /usr/local/bin/bash; do
+        [ -x "$candidato" ] || continue
+        if [ "$("$candidato" -c 'echo ${BASH_VERSINFO[0]}' 2>/dev/null)" -ge 4 ] 2>/dev/null; then
+            BASH4="$candidato"
+            break
+        fi
+    done
+
+    if [ -z "$BASH4" ]; then
+        have brew || fail 'O wg-quick precisa de bash 4+ e esta maquina so tem o 3.2 da Apple. Instale o Homebrew em https://brew.sh e rode de novo.'
+        step 'Instalando um bash moderno (o /bin/bash da Apple fica intacto)'
+        brew install bash >/dev/null 2>&1 || fail 'O brew nao conseguiu instalar o bash.'
+        for candidato in "$(brew --prefix 2>/dev/null)/bin/bash" /opt/homebrew/bin/bash /usr/local/bin/bash; do
+            [ -x "$candidato" ] && BASH4="$candidato" && break
+        done
+    fi
+
+    [ -n "$BASH4" ] || fail 'Nao achei um bash 4+ nesta maquina, e sem ele o wg-quick nao sobe tunel nenhum.'
+    ok "bash para o wg-quick: $BASH4"
+}
+
+# Toda chamada ao wg-quick passa por aqui. Nenhuma o chama direto, de proposito.
+wgq() {
+    sudo "$BASH4" "$(command -v wg-quick)" "$@"
 }
 
 # O convite e a unica coisa que o instalador nao consegue arranjar sozinho.
@@ -1355,12 +1398,15 @@ macos_write_sudoers() {
     wg_bin="$(command -v wg)"
     tmp="$(mktemp)"
 
-    printf '%s ALL=(root) NOPASSWD: %s up %s, %s down %s, %s up %s, %s down %s, %s show *\n' \
+    # O interpretador entra na regra porque ele entra na chamada (ver macos_ensure_bash4).
+    # Sem ele aqui, o sudo veria um comando diferente do autorizado e pediria senha no clique
+    # do Go Live -- justamente o que esta regra existe para evitar.
+    printf '%s ALL=(root) NOPASSWD: %s %s up %s, %s %s down %s, %s %s up %s, %s %s down %s, %s show *\n' \
         "$USER" \
-        "$wg_quick" "$TUNNEL_PROFILE" \
-        "$wg_quick" "$TUNNEL_PROFILE" \
-        "$wg_quick" "$TUNNEL_PROFILE_CTL" \
-        "$wg_quick" "$TUNNEL_PROFILE_CTL" \
+        "$BASH4" "$wg_quick" "$TUNNEL_PROFILE" \
+        "$BASH4" "$wg_quick" "$TUNNEL_PROFILE" \
+        "$BASH4" "$wg_quick" "$TUNNEL_PROFILE_CTL" \
+        "$BASH4" "$wg_quick" "$TUNNEL_PROFILE_CTL" \
         "$wg_bin" > "$tmp"
     chmod 440 "$tmp"
 
@@ -1383,9 +1429,9 @@ macos_write_sudoers() {
 # seria duplicar em linguagem sem teste uma decisao que ja existe testada.
 macos_bring_up_control() {
     step 'Subindo o tunel de controle'
-    sudo wg-quick down "$TUNNEL_PROFILE" >/dev/null 2>&1 || true
-    sudo wg-quick down "$TUNNEL_PROFILE_CTL" >/dev/null 2>&1 || true
-    if sudo wg-quick up "$TUNNEL_PROFILE_CTL" >/dev/null 2>&1; then
+    wgq down "$TUNNEL_PROFILE" >/dev/null 2>&1 || true
+    wgq down "$TUNNEL_PROFILE_CTL" >/dev/null 2>&1 || true
+    if wgq up "$TUNNEL_PROFILE_CTL" >/dev/null 2>&1; then
         ok 'Tunel de controle no ar.'
     else
         warn 'Nao consegui subir o tunel de controle agora. O plugin tenta de novo quando o Discord abrir.'
@@ -1581,9 +1627,14 @@ macos_remove_tunnel() {
     [ "$OS_NAME" = "Darwin" ] || return 0
     have wg-quick || return 0
 
+    # O --restore nao passa pela instalacao, entao o BASH4 ainda esta vazio aqui. Sem isto o
+    # `wgq` chamaria `sudo "" wg-quick` e a limpeza falharia em silencio -- deixando para tras
+    # justamente a regra de sudoers, que e a parte que mais importa remover.
+    [ -n "$BASH4" ] || macos_ensure_bash4
+
     step 'Derrubando o tunel e removendo os perfis'
-    sudo wg-quick down "$TUNNEL_PROFILE" >/dev/null 2>&1 || true
-    sudo wg-quick down "$TUNNEL_PROFILE_CTL" >/dev/null 2>&1 || true
+    wgq down "$TUNNEL_PROFILE" >/dev/null 2>&1 || true
+    wgq down "$TUNNEL_PROFILE_CTL" >/dev/null 2>&1 || true
     sudo rm -f "$WG_DIR/$TUNNEL_PROFILE.conf" "$WG_DIR/$TUNNEL_PROFILE_CTL.conf" 2>/dev/null || true
 
     if [ -f "$SUDOERS_FILE" ]; then

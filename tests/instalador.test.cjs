@@ -964,6 +964,36 @@ describe("deriva entre o instalador de Windows e o de shell", () => {
         assert.match(SHELL, /%s show \*/);
     });
 
+    test("o instalador chama o wg-quick por um bash 4+, nunca direto", () => {
+        // Medido em 20/09 num Mac de verdade: `sudo wg-quick up` responde "Version mismatch:
+        // bash 3 detected, when bash 4+ required". A Apple parou no bash 3.2, e sob sudo o PATH
+        // e higienizado, entao o `#!/usr/bin/env bash` do wg-quick acha o /bin/bash dela.
+        //
+        // O CI nao pegou porque o runner do GitHub ja tem o bash do Homebrew no PATH. Este
+        // teste existe para que a chamada direta nao volte.
+        assert.match(SHELL, /wgq\(\) \{/, "existe o wrapper");
+        assert.match(SHELL, /sudo "\$BASH4" "\$\(command -v wg-quick\)"/);
+        // So linhas de codigo: o comentario que explica este achado cita `sudo wg-quick up` de
+        // proposito, e uma busca crua no arquivo inteiro se acusaria sozinha.
+        const codigo = SHELL.split("\n").filter(l => !l.trim().startsWith("#"));
+        const diretas = codigo.filter(l => /sudo wg-quick /.test(l));
+        assert.deepEqual(diretas, [], "nenhuma chamada pode invocar o wg-quick direto");
+    });
+
+    test("a regra de sudoers lista o interpretador, senao ela nao casa com a chamada", () => {
+        // Se a regra disser `wg-quick up X` e a chamada for `bash wg-quick up X`, o sudo ve
+        // comandos diferentes e volta a pedir senha -- no clique do Go Live.
+        assert.match(SHELL, /NOPASSWD: %s %s up %s/);
+        assert.match(SHELL, /"\$BASH4" "\$wg_quick" "\$TUNNEL_PROFILE"/);
+    });
+
+    test("o controle do plugin usa o mesmo interpretador que o instalador autoriza", () => {
+        // As duas pontas de novo: o plugin chama `<bash> <wg-quick> up X`, e a regra tem de
+        // listar exatamente isso.
+        assert.match(CONTROLE_WG, /BASH4_PADRAO = "\/opt\/homebrew\/bin\/bash"/);
+        assert.match(CONTROLE_WG, /rodar\(bash, wgQuick, "up", perfil\)/);
+    });
+
     test("a regra de sudoers passa pelo visudo antes de ser instalada", () => {
         // Um /etc/sudoers.d invalido quebra o sudo da maquina inteira.
         assert.match(SHELL, /visudo -c -f/);
