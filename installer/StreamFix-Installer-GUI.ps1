@@ -269,15 +269,61 @@ $donePage.Controls.Add($doneTitleLabel)
 
 $doneTextLabel = New-Object System.Windows.Forms.Label
 $doneTextLabel.Location = New-Object System.Drawing.Point(0, 70)
-$doneTextLabel.Size = New-Object System.Drawing.Size(505, 60)
+$doneTextLabel.Size = New-Object System.Drawing.Size(505, 85)
 $donePage.Controls.Add($doneTextLabel)
 
 $doneLogBox = New-Object System.Windows.Forms.RichTextBox
-$doneLogBox.Location = New-Object System.Drawing.Point(0, 130)
-$doneLogBox.Size = New-Object System.Drawing.Size(505, 270)
+$doneLogBox.Location = New-Object System.Drawing.Point(0, 160)
+$doneLogBox.Size = New-Object System.Drawing.Size(505, 240)
 $doneLogBox.ReadOnly = $true
 $doneLogBox.Visible = $false
 $donePage.Controls.Add($doneLogBox)
+
+# --------------------------------------------------------------------- pagina de desinstalar
+
+# O plano vem do motor: so aparece o que o StreamFix instalou de fato (registro gravado na hora
+# de instalar), marcado por padrao. Quem ja tinha Git ou Node antes nunca ve essas opcoes.
+$uninstallPlan = @(Get-UninstallPlan $detectedRoot)
+$uninstallChecks = @{}
+
+$uninstallPage = New-Object System.Windows.Forms.Panel
+$uninstallPage.Location = New-Object System.Drawing.Point(20, 75)
+$uninstallPage.Size = New-Object System.Drawing.Size(505, 400)
+$uninstallPage.Visible = $false
+$form.Controls.Add($uninstallPage)
+
+$uninstallIntroLabel = New-Object System.Windows.Forms.Label
+$uninstallIntroLabel.Text = "Vai ser removido sempre: o plugin StreamFix, as configuracoes dele e o perfil do tunel no WireSock (o convite usado continua gasto)."
+$uninstallIntroLabel.Location = New-Object System.Drawing.Point(0, 0)
+$uninstallIntroLabel.Size = New-Object System.Drawing.Size(505, 45)
+$uninstallPage.Controls.Add($uninstallIntroLabel)
+
+$uninstallOptionsBox = New-Object System.Windows.Forms.GroupBox
+$uninstallOptionsBox.Text = 'Tambem remover'
+$uninstallOptionsBox.Location = New-Object System.Drawing.Point(0, 55)
+$uninstallOptionsHeight = 30 + 24 * [Math]::Max(1, $uninstallPlan.Count)
+$uninstallOptionsBox.Size = New-Object System.Drawing.Size(505, $uninstallOptionsHeight)
+$uninstallPage.Controls.Add($uninstallOptionsBox)
+
+if ($uninstallPlan.Count -eq 0) {
+    $nothingLabel = New-Object System.Windows.Forms.Label
+    $nothingLabel.Text = 'Nada mais: o que ja estava na sua maquina fica como esta.'
+    $nothingLabel.Location = New-Object System.Drawing.Point(15, 25)
+    $nothingLabel.AutoSize = $true
+    $uninstallOptionsBox.Controls.Add($nothingLabel)
+} else {
+    $y = 24
+    foreach ($item in $uninstallPlan) {
+        $check = New-Object System.Windows.Forms.CheckBox
+        $check.Text = $item.Label
+        $check.Checked = [bool] $item.Default
+        $check.Location = New-Object System.Drawing.Point(15, $y)
+        $check.Size = New-Object System.Drawing.Size(475, 22)
+        $uninstallOptionsBox.Controls.Add($check)
+        $uninstallChecks[$item.Id] = $check
+        $y += 24
+    }
+}
 
 # --------------------------------------------------------------------- botoes
 
@@ -297,6 +343,52 @@ $closeButton.Size = New-Object System.Drawing.Size(160, 32)
 $closeButton.Visible = $false
 $form.Controls.Add($closeButton)
 $closeButton.Add_Click({ $form.Close() })
+
+$openUninstallButton = New-Object System.Windows.Forms.Button
+$openUninstallButton.Text = 'Desinstalar...'
+$openUninstallButton.Location = New-Object System.Drawing.Point(20, 485)
+$openUninstallButton.Size = New-Object System.Drawing.Size(160, 32)
+$form.Controls.Add($openUninstallButton)
+
+$backButton = New-Object System.Windows.Forms.Button
+$backButton.Text = 'Voltar'
+$backButton.Location = New-Object System.Drawing.Point(20, 485)
+$backButton.Size = New-Object System.Drawing.Size(160, 32)
+$backButton.Visible = $false
+$form.Controls.Add($backButton)
+
+$uninstallButton = New-Object System.Windows.Forms.Button
+$uninstallButton.Text = 'Desinstalar'
+$uninstallButton.Location = New-Object System.Drawing.Point(360, 485)
+$uninstallButton.Size = New-Object System.Drawing.Size(160, 32)
+$uninstallButton.BackColor = [System.Drawing.Color]::Firebrick
+$uninstallButton.ForeColor = [System.Drawing.Color]::White
+$uninstallButton.FlatStyle = 'Flat'
+$uninstallButton.Visible = $false
+$form.Controls.Add($uninstallButton)
+
+$openUninstallButton.Add_Click({
+    $optionsPage.Visible = $false
+    $installButton.Visible = $false
+    $openUninstallButton.Visible = $false
+    $uninstallPage.Visible = $true
+    $uninstallButton.Visible = $true
+    $backButton.Visible = $true
+})
+
+$backButton.Add_Click({
+    $uninstallPage.Visible = $false
+    $uninstallButton.Visible = $false
+    $backButton.Visible = $false
+    $optionsPage.Visible = $true
+    $installButton.Visible = $true
+    $openUninstallButton.Visible = $true
+})
+
+$uninstallButton.Add_Click({
+    $confirm = [System.Windows.Forms.MessageBox]::Show('Desinstalar o StreamFix agora? O Discord vai fechar e abrir de novo.', 'StreamFix', 'YesNo', 'Question')
+    if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) { Start-Uninstall }
+})
 
 # =============================================================================== log
 
@@ -322,7 +414,7 @@ function Append-OutputLine($item) {
     switch ($prefix) {
         'STEP' { Append-Log "  [*] $text" $ColorStep }
         'OK' { Append-Log "  [OK] $text" $ColorOk }
-        'WARN' { Append-Log "  [!] $text" $ColorWarn }
+        'WARN' { Append-Log "  [!] $text" $ColorWarn; [void] $state.Warnings.Add($text) }
         'ERR' { Append-Log "  [X] $text" $ColorErr }
         default { Append-Log $text $ColorHost }
     }
@@ -339,7 +431,7 @@ $ColorHost = [System.Drawing.Color]::Gainsboro
 # Roda numa runspace separada pra nao travar a janela durante o pnpm build. As funcoes de
 # interface do core sao redefinidas aqui pra escrever "PREFIXO|texto" na saida em vez de
 # mexer na janela direto -- so a thread da UI pode tocar em controles do WinForms.
-$workerTemplate = @'
+$workerInstallParams = @'
 param(
     [string] $CorePath,
     [string] $TargetRoot,
@@ -349,7 +441,18 @@ param(
     [bool] $Permanent,
     [string] $ResolvedTag
 )
+'@
 
+$workerUninstallParams = @'
+param(
+    [string] $CorePath,
+    [string] $TargetRoot,
+    [string[]] $Choices,
+    [string] $ResolvedTag
+)
+'@
+
+$workerCommon = @'
 $ErrorActionPreference = 'Stop'
 . $CorePath -NoAutoRun -ResolvedTag $ResolvedTag
 
@@ -375,7 +478,9 @@ function Confirm-Action($question) {
     $result = [System.Windows.Forms.MessageBox]::Show($question, 'StreamFix', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
     return $result -eq [System.Windows.Forms.DialogResult]::Yes
 }
+'@
 
+$workerInstallTail = @'
 function Select-Target($root) {
     if ($DownloadFresh) { return (Install-Mod $ModChoice) }
     return $root
@@ -392,6 +497,13 @@ function Select-Persistence { return $Permanent }
 Invoke-Install $TargetRoot
 '@
 
+$workerUninstallTail = @'
+Invoke-FullUninstall $TargetRoot $Choices
+'@
+
+$workerTemplate = $workerInstallParams + "`n" + $workerCommon + "`n" + $workerInstallTail
+$uninstallTemplate = $workerUninstallParams + "`n" + $workerCommon + "`n" + $workerUninstallTail
+
 $state = [pscustomobject]@{
     Runspace = $null
     Pipeline = $null
@@ -400,6 +512,8 @@ $state = [pscustomobject]@{
     Timer = $null
     LastIndex = 0
     InfoLastIndex = 0
+    Operation = 'install'
+    Warnings = (New-Object System.Collections.ArrayList)
 }
 
 function Start-Install {
@@ -416,24 +530,58 @@ function Start-Install {
         return
     }
 
+    Start-Worker $workerTemplate @{
+        CorePath = $coreTempPath
+        TargetRoot = $detectedRoot
+        DownloadFresh = $downloadFresh
+        ModChoice = $modChoice
+        Invite = $invite
+        Permanent = [bool] $radioPermanent.Checked
+        ResolvedTag = $script:ResolvedTag
+    } 'install'
+}
+
+function Start-Uninstall {
+    $choices = @()
+    foreach ($id in $uninstallChecks.Keys) {
+        if ($uninstallChecks[$id].Checked) { $choices += $id }
+    }
+
+    Start-Worker $uninstallTemplate @{
+        CorePath = $coreTempPath
+        TargetRoot = $detectedRoot
+        Choices = [string[]] $choices
+        ResolvedTag = $script:ResolvedTag
+    } 'uninstall'
+}
+
+function Start-Worker([string] $template, [hashtable] $parameters, [string] $operation) {
     $optionsPage.Visible = $false
+    $uninstallPage.Visible = $false
     $progressPage.Visible = $true
     $installButton.Visible = $false
-    $form.Text = 'StreamFix -- instalando...'
+    $uninstallButton.Visible = $false
+    $openUninstallButton.Visible = $false
+    $backButton.Visible = $false
+    $state.Operation = $operation
+    $state.Warnings.Clear()
+    if ($operation -eq 'uninstall') {
+        $progressLabel.Text = 'Desinstalando...'
+        $form.Text = 'StreamFix -- desinstalando...'
+    } else {
+        $progressLabel.Text = 'Instalando...'
+        $form.Text = 'StreamFix -- instalando...'
+    }
 
     $runspace = [runspacefactory]::CreateRunspace()
     $runspace.Open()
 
     $ps = [powershell]::Create()
     $ps.Runspace = $runspace
-    $ps.AddScript($workerTemplate) | Out-Null
-    $ps.AddParameter('CorePath', $coreTempPath) | Out-Null
-    $ps.AddParameter('TargetRoot', $detectedRoot) | Out-Null
-    $ps.AddParameter('DownloadFresh', $downloadFresh) | Out-Null
-    $ps.AddParameter('ModChoice', $modChoice) | Out-Null
-    $ps.AddParameter('Invite', $invite) | Out-Null
-    $ps.AddParameter('Permanent', [bool] $radioPermanent.Checked) | Out-Null
-    $ps.AddParameter('ResolvedTag', $script:ResolvedTag) | Out-Null
+    $ps.AddScript($template) | Out-Null
+    foreach ($name in $parameters.Keys) {
+        $ps.AddParameter($name, $parameters[$name]) | Out-Null
+    }
 
     $output = New-Object 'System.Management.Automation.PSDataCollection[psobject]'
 
@@ -492,8 +640,10 @@ function Show-Done([string] $failure) {
     $donePage.Visible = $true
     $closeButton.Visible = $true
 
+    $uninstalling = $state.Operation -eq 'uninstall'
+
     if ($failure) {
-        $form.Text = 'StreamFix -- erro na instalacao'
+        $form.Text = if ($uninstalling) { 'StreamFix -- erro na desinstalacao' } else { 'StreamFix -- erro na instalacao' }
         $doneIconLabel.Text = [char] 0x274C
         $doneIconLabel.ForeColor = [System.Drawing.Color]::Firebrick
         $doneTitleLabel.Text = 'Algo deu errado'
@@ -504,8 +654,20 @@ function Show-Done([string] $failure) {
         $form.Text = 'StreamFix -- pronto'
         $doneIconLabel.Text = [char] 0x2705
         $doneIconLabel.ForeColor = [System.Drawing.Color]::ForestGreen
-        $doneTitleLabel.Text = 'Pronto!'
-        $doneTextLabel.Text = "O plugin ja vem ativado, nao precisa mexer em nada. Entre numa call e use Go Live ou a camera.`n`nSe o Discord nao abriu sozinho, abra ele manualmente."
+        $doneTitleLabel.Text = if ($uninstalling) { 'Desinstalado!' } else { 'Pronto!' }
+        $doneTextLabel.Text = if ($uninstalling) {
+            "O StreamFix foi removido. Se o Discord nao abriu sozinho, abra ele manualmente."
+        } else {
+            "O plugin ja vem ativado, nao precisa mexer em nada. Entre numa call e use Go Live ou a camera.`n`nSe o Discord nao abriu sozinho, abra ele manualmente."
+        }
+
+        # Avisos nao derrubam a operacao, mas some a caixa de progresso ao terminar: sem isto, quem
+        # nao conseguiu remover algo so descobriria depois.
+        if ($state.Warnings.Count -gt 0) {
+            $doneTextLabel.Text += "`n`nTerminou, mas com avisos:"
+            $doneLogBox.Visible = $true
+            $doneLogBox.Text = ($state.Warnings -join "`n")
+        }
     }
 }
 

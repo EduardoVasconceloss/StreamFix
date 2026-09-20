@@ -9,6 +9,7 @@
       .\StreamFix-Installer.ps1 -Source "C:\caminho\do\Equicord"
       .\StreamFix-Installer.ps1 -Mod Equicord -Yes
       .\StreamFix-Installer.ps1 -Mode Uninstall
+      .\StreamFix-Installer.ps1 -Mode UninstallAll
 
     Obrigado ao Vithor (https://github.com/Vith0r), que escreveu o primeiro instalador do
     GoLiveBypass e abriu o caminho para este aqui.
@@ -16,7 +17,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Menu', 'Install', 'Uninstall', 'Restore')]
+    [ValidateSet('Menu', 'Install', 'Uninstall', 'Restore', 'UninstallAll')]
     [string] $Mode = 'Menu',
 
     [ValidateSet('Equicord', 'Vencord')]
@@ -477,7 +478,17 @@ function Install-Toolchain($root = $null) {
             foreach ($tool in $missing) {
                 $id = if ($tool -eq 'git') { 'Git.Git' } else { 'OpenJS.NodeJS.LTS' }
                 Write-Step "winget install $id"
-                Invoke-Native { winget install --id $id --accept-source-agreements --accept-package-agreements --silent }
+                # --source winget: sem isso o winget consulta tambem a msstore, e onde um
+                # antivirus/proxy que intercepta TLS quebra o certificado (0x8a15005e) o comando
+                # inteiro aborta, mesmo com o pacote achado no repositorio do winget.
+                Invoke-Native { winget install --id $id --source winget --accept-source-agreements --accept-package-agreements --silent }
+            }
+
+            # Se o winget falhou mesmo assim, o instalador oficial nao depende dele.
+            Update-PathFromEnvironment
+            foreach ($tool in ($missing | Where-Object { -not (Test-Tool $_) })) {
+                Write-Warn "O winget nao instalou o $tool. Tentando o instalador oficial."
+                Install-ToolDirect $tool
             }
         } else {
             # Sem winget: cai pro instalador oficial de cada ferramenta (Install-ToolDirect).
@@ -500,6 +511,7 @@ function Install-Toolchain($root = $null) {
         # ferramenta continuar faltando -- caso raro de instalador do winget que precisa
         # mesmo de uma sessao nova.
         Update-PathFromEnvironment
+        foreach ($tool in ($missing | Where-Object { Test-Tool $_ })) { Add-InstallRecord $tool $true }
         $stillMissing = $missing | Where-Object { -not (Test-Tool $_) }
 
         if ($stillMissing.Count -gt 0) {
@@ -525,7 +537,7 @@ function Install-Toolchain($root = $null) {
         } else {
             Write-Warn 'Nenhuma instalacao de Node compativel encontrada. Instalando a versao mais recente.'
             if (Test-Tool 'winget') {
-                Invoke-Native { winget install --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements --silent }
+                Invoke-Native { winget install --id OpenJS.NodeJS.LTS --source winget --accept-source-agreements --accept-package-agreements --silent }
             } else {
                 Install-ToolDirect 'node'
             }
@@ -546,6 +558,7 @@ function Install-Toolchain($root = $null) {
 
     $pinnedPnpm = Get-PinnedPnpmVersion $root
     if (Test-Pnpm $pinnedPnpm) { return }
+    $hadPnpm = Test-Tool 'pnpm'
 
     # O Corepack cria um atalho do pnpm antes de saber que versao usar, e na primeira
     # execucao ele confere a assinatura contra chaves embutidas que no Node 22 estao
@@ -559,6 +572,9 @@ function Install-Toolchain($root = $null) {
     if (-not (Test-Pnpm $pinnedPnpm)) {
         throw "Nao consegui deixar o pnpm funcionando. Abra um terminal e rode: npm install -g $pnpmSpec"
     }
+
+    # Trocar o pnpm que a pessoa ja tinha por outra versao nao o torna nosso.
+    if (-not $hadPnpm) { Add-InstallRecord 'pnpm' $true }
 }
 
 function Install-Mod($choice) {
@@ -587,6 +603,7 @@ function Install-Mod($choice) {
     Write-Step "git clone $($info.Git)"
     Invoke-Native { git clone --depth 1 $info.Git $target }
     if ($LASTEXITCODE -ne 0) { throw 'git clone falhou' }
+    Add-InstallRecord 'checkout' $target
 
     return $target
 }
@@ -715,6 +732,8 @@ function Invoke-Install($root) {
     $weInjected = -not (Test-InjectedFromCheckout $root)
     if ($weInjected) {
         Invoke-Injection $root
+        # No modo temporario a injecao e desfeita ao fechar o Discord, entao nao ha o que registrar.
+        if ($permanent) { Add-InstallRecord 'injecao' $true }
     } else {
         Write-Step 'O Discord ja carrega deste checkout, so reiniciando'
         Stop-Discord
@@ -906,6 +925,17 @@ function Select-Target($root) {
 
 # =============================================================================== ferramentas
 
+# Fallback sem winget: instalador oficial de cada ferramenta, versao e hash fixos. Trocar a
+# versao aqui exige conferir o hash de novo contra a fonte oficial.
+$NodeVersion = '24.19.0'
+$NodeMsiUrl = "https://nodejs.org/dist/v$NodeVersion/node-v$NodeVersion-x64.msi"
+$NodeMsiSha256 = 'f0f66c2a80c08a30a5ab5179ee9ea9e45f9b46289436a8cc87ff833b852db351'
+
+$GitTag = 'v2.55.0.windows.4'
+$GitExeVersion = '2.55.0.4'
+$GitExeUrl = "https://github.com/git-for-windows/git/releases/download/$GitTag/Git-$GitExeVersion-64-bit.exe"
+$GitExeSha256 = '0cbc0b34a74b3aff3ace0910328549155a770e228331b19cb1498218a120e7ff'
+
 $TorRoot = Join-Path $env:LOCALAPPDATA 'StreamFix\Tor'
 $LegacyTorRoot = Join-Path $env:LOCALAPPDATA 'GoLiveBypass\Tor'
 $TorExe = Join-Path $TorRoot 'tor\tor.exe'
@@ -989,6 +1019,244 @@ function Remove-TorDaemon {
     Remove-Item -LiteralPath $TorRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# =============================================================================== desinstalacao
+
+# O que o StreamFix instalou de fato, gravado na hora de instalar. Desinstalar Git, Node ou
+# WireSock de quem ja tinha esses programas antes seria destrutivo, e nao ha como saber depois
+# se foi o StreamFix ou a pessoa que os colocou ali -- so quem estava presente quando aconteceu.
+# Quem instalou antes desta versao nao tem registro, e para essa pessoa a desinstalacao so
+# oferece o que e do proprio StreamFix.
+$InstallRecordFile = Join-Path $env:LOCALAPPDATA 'StreamFix\instalado.json'
+
+function Get-InstallRecord {
+    if (-not (Test-Path -LiteralPath $InstallRecordFile)) { return [pscustomobject]@{} }
+    try {
+        $record = Get-Content -LiteralPath $InstallRecordFile -Raw | ConvertFrom-Json
+        if ($record) { return $record }
+    } catch { }
+    return [pscustomobject]@{}
+}
+
+function Get-RecordedValue($record, [string] $name) {
+    $prop = $record.PSObject.Properties[$name]
+    if ($prop) { return $prop.Value }
+    return $null
+}
+
+# Falhar em gravar o registro nunca derruba a instalacao: o custo e so a desinstalacao nao
+# oferecer remover essa ferramenta.
+function Add-InstallRecord([string] $name, $value) {
+    try {
+        $record = Get-InstallRecord
+        $record | Add-Member -NotePropertyName $name -NotePropertyValue $value -Force
+        Save-Text $InstallRecordFile ($record | ConvertTo-Json)
+    } catch { }
+}
+
+function Remove-InstallRecordEntry([string[]] $names) {
+    try {
+        $record = Get-InstallRecord
+        foreach ($name in $names) {
+            if ($record.PSObject.Properties[$name]) { $record.PSObject.Properties.Remove($name) }
+        }
+        if (@($record.PSObject.Properties).Count -eq 0) {
+            Remove-Item -LiteralPath $InstallRecordFile -Force -ErrorAction SilentlyContinue
+        } else {
+            Save-Text $InstallRecordFile ($record | ConvertTo-Json)
+        }
+    } catch { }
+}
+
+# Tudo que e do proprio StreamFix (plugin, configuracoes, perfil do tunel) sai sempre. Aqui so
+# entra o que tem escolha: o que foi o StreamFix que colocou na maquina, marcado por padrao.
+function Get-UninstallPlan($root) {
+    $record = Get-InstallRecord
+    $items = @()
+
+    if ($root) {
+        $mod = Get-CheckoutMod $root
+        $items += [pscustomobject]@{
+            Id = 'injecao'
+            Label = "Desfazer a injecao do $mod no Discord (o Discord volta ao normal)"
+            Default = [bool] (Get-RecordedValue $record 'injecao')
+        }
+
+        $checkout = Get-RecordedValue $record 'checkout'
+        if ($checkout -and $checkout -eq $root) {
+            $items += [pscustomobject]@{
+                Id = 'pasta'
+                Label = "Apagar a pasta do $mod em $root (o StreamFix baixou; desfaz a injecao junto)"
+                Default = $true
+            }
+        }
+    }
+
+    $tools = @(
+        @{ Id = 'pnpm'; Label = 'pnpm (o StreamFix instalou)' },
+        @{ Id = 'node'; Label = 'Node.js (o StreamFix instalou)' },
+        @{ Id = 'git'; Label = 'Git (o StreamFix instalou)' },
+        @{ Id = 'wiresock'; Label = 'WireSock (o StreamFix instalou; e o programa do tunel)' }
+    )
+    foreach ($tool in $tools) {
+        if (Get-RecordedValue $record $tool.Id) {
+            $items += [pscustomobject]@{ Id = $tool.Id; Label = $tool.Label; Default = $true }
+        }
+    }
+
+    return $items
+}
+
+# Le o settings.json com o Discord fechado (aberto, ele regrava a partir da memoria e desfaz o
+# que escrevemos). Mesma cautela do Set-PluginSettings: arquivo ilegivel nao se toca.
+function Remove-PluginSettings($root) {
+    $file = Get-ModSettingsFile $root
+    if (-not (Test-Path -LiteralPath $file)) { return }
+
+    $settings = $null
+    try { $settings = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json } catch {
+        Write-Warn "Nao consegui ler $file, entao nao mexi nele."
+        return
+    }
+    if (-not $settings -or -not $settings.PSObject.Properties['plugins']) { return }
+
+    $changed = $false
+    foreach ($name in @('StreamFix', 'GoLiveBypass')) {
+        if ($settings.plugins.PSObject.Properties[$name]) {
+            $settings.plugins.PSObject.Properties.Remove($name)
+            $changed = $true
+        }
+    }
+
+    if ($changed) {
+        Save-Text $file ($settings | ConvertTo-Json -Depth 10)
+        Write-Step 'Configuracoes do plugin removidas'
+    }
+}
+
+# So os dois perfis do StreamFix, pelo nome. Outros perfis do WireSock da pessoa nao sao nossos.
+# O peer na saida continua la: so quem opera a saida consegue liberar aquele endereco.
+function Remove-Tunnel([string] $profile) {
+    if (-not $profile) { $profile = $DefaultTunnelProfile }
+
+    $cli = Find-WireSockCli
+    if (-not $cli) { return }
+
+    $list = (Invoke-WireSock $cli @('list')).texto
+    foreach ($name in @($profile, (Get-ControlProfileName $profile))) {
+        if (-not (Test-ProfileName $list $name)) { continue }
+
+        Write-Step "Removendo o perfil $name do WireSock"
+        if (Test-ProfileName (Invoke-WireSock $cli @('status')).texto $name) {
+            $null = Invoke-WireSock $cli @('disconnect')
+        }
+        $null = Invoke-WireSock $cli @('delete', $name)
+    }
+}
+
+function Uninstall-WingetPackage([string] $id, [string] $label) {
+    if (-not (Test-Tool 'winget')) {
+        Write-Warn "Sem winget nesta maquina. Remova o $label em Configuracoes > Aplicativos."
+        return $false
+    }
+
+    Write-Step "Removendo o $label"
+    Invoke-Native { winget uninstall --id $id --exact --silent --accept-source-agreements }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "O winget nao conseguiu remover o $label. Remova em Configuracoes > Aplicativos."
+        return $false
+    }
+    return $true
+}
+
+function Invoke-FullUninstall($root, [string[]] $choices) {
+    $choices = @($choices)
+
+    # Apagar a pasta com o Discord ainda apontando para ela deixaria o Discord sem abrir.
+    if (($choices -contains 'pasta') -and ($choices -notcontains 'injecao')) { $choices += 'injecao' }
+
+    Stop-Discord
+
+    $pluginRemoved = $false
+    if ($root) {
+        $target = Join-Path $root "src\userplugins\$PluginDirName"
+        if (Test-Path -LiteralPath $target) {
+            Write-Step "Removendo $target"
+            Remove-Item -LiteralPath $target -Recurse -Force
+            $pluginRemoved = $true
+        }
+        Remove-PluginSettings $root
+    }
+
+    Remove-Tunnel $TunnelProfile
+    Remove-TorDaemon
+
+    if ($root) {
+        if ($choices -contains 'injecao') {
+            if (Test-Tool 'pnpm') {
+                Push-Location -LiteralPath $root
+                try {
+                    Write-Step 'Desfazendo a injecao'
+                    Invoke-Native { pnpm uninject -- --branch auto }
+                    if ($LASTEXITCODE -ne 0) { Write-Warn 'O pnpm uninject falhou. Rode "pnpm uninject" na pasta do mod.' }
+                    else { Remove-InstallRecordEntry @('injecao') }
+                } finally { Pop-Location }
+            } else {
+                Write-Warn 'Sem pnpm nesta maquina, entao nao consegui desfazer a injecao.'
+            }
+        } elseif ($pluginRemoved) {
+            # O mod continua injetado e carregando o build antigo, que ainda tem o plugin dentro.
+            Build-Mod $root
+        }
+
+        if ($choices -contains 'pasta') {
+            Write-Step "Apagando $root"
+            Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $root) {
+                Write-Warn "Nao consegui apagar tudo em $root. Apague a pasta na mao."
+            } else {
+                Remove-InstallRecordEntry @('checkout')
+            }
+        }
+    }
+
+    Start-Discord
+
+    # pnpm antes do Node: quem o remove e o npm, que vem com o Node.
+    if ($choices -contains 'pnpm') {
+        if (Test-Tool 'npm') {
+            Write-Step 'Removendo o pnpm'
+            Invoke-Native { npm uninstall -g pnpm }
+            if ($LASTEXITCODE -eq 0) { Remove-InstallRecordEntry @('pnpm') }
+            else { Write-Warn 'Nao consegui remover o pnpm. Rode: npm uninstall -g pnpm' }
+        } else {
+            Remove-InstallRecordEntry @('pnpm')
+        }
+    }
+    if (($choices -contains 'node') -and (Uninstall-WingetPackage 'OpenJS.NodeJS.LTS' 'Node.js')) { Remove-InstallRecordEntry @('node') }
+    if (($choices -contains 'git') -and (Uninstall-WingetPackage 'Git.Git' 'Git')) { Remove-InstallRecordEntry @('git') }
+    if (($choices -contains 'wiresock') -and (Uninstall-WingetPackage $WireSockWingetId 'WireSock')) { Remove-InstallRecordEntry @('wiresock') }
+
+    Write-Host ''
+    Write-Ok 'StreamFix desinstalado.'
+}
+
+function Invoke-UninstallAll {
+    $root = Find-Checkout
+    $plan = @(Get-UninstallPlan $root)
+
+    Write-Host ''
+    Write-Host '  Vou remover o plugin StreamFix, as configuracoes dele e o perfil do tunel no WireSock.' -ForegroundColor White
+    if (-not (Confirm-Action 'Desinstalar agora?')) { throw 'Cancelado.' }
+
+    $choices = @()
+    foreach ($item in $plan) {
+        $wanted = if ($Yes) { $item.Default } else { Confirm-Action "Tambem: $($item.Label)?" }
+        if ($wanted) { $choices += $item.Id }
+    }
+
+    Invoke-FullUninstall $root $choices
+}
+
 # =============================================================================== tunel
 
 # O tunel e o produto agora. Estas funcoes fazem o que so o PowerShell faz -- achar o WireSock,
@@ -1059,7 +1327,7 @@ function Install-WireSock {
         throw "Preciso do WireSock e nao achei o winget para instala-lo. Instale o WireSock a mao em https://www.wiresock.net e rode este instalador de novo."
     }
 
-    Invoke-Native { winget install --id $WireSockWingetId --exact --silent --accept-package-agreements --accept-source-agreements }
+    Invoke-Native { winget install --id $WireSockWingetId --source winget --exact --silent --accept-package-agreements --accept-source-agreements }
 
     Update-PathFromEnvironment
     $cli = Find-WireSockCli
@@ -1163,7 +1431,10 @@ function Repair-WireSockServico {
 
 function Get-WireSock {
     $cli = Find-WireSockCli
-    if (-not $cli) { $cli = Install-WireSock }
+    if (-not $cli) {
+        $cli = Install-WireSock
+        Add-InstallRecord 'wiresock' $true
+    }
     else { Write-Step 'WireSock ja instalado' }
 
     # Antes de qualquer coisa depender dele. Sem isto, a primeira chamada ao CLI falha com uma
@@ -1743,6 +2014,7 @@ function Show-MainMenu {
     Write-Host '    [1] Instalar ou atualizar o StreamFix' -ForegroundColor Green
     Write-Host '    [2] Remover so o plugin (o mod continua)' -ForegroundColor Yellow
     Write-Host '    [3] Restaurar tudo (remove o plugin e desfaz a injecao)' -ForegroundColor Red
+    Write-Host '    [4] Desinstalar o StreamFix por completo (plugin, tunel e o que ele instalou)' -ForegroundColor Magenta
     Write-Host '    [0] Sair' -ForegroundColor Gray
     Write-Host ''
 
@@ -1750,6 +2022,7 @@ function Show-MainMenu {
         '1' { Invoke-Install $root }
         '2' { Invoke-Uninstall }
         '3' { Invoke-RestoreEverything }
+        '4' { Invoke-UninstallAll }
         default { Write-Host '  Ate mais.' -ForegroundColor DarkGray }
     }
 }
@@ -1773,6 +2046,7 @@ if (-not $NoAutoRun) {
             'Install' { Invoke-Install (Find-Checkout) }
             'Uninstall' { Invoke-Uninstall }
             'Restore' { Invoke-RestoreEverything }
+            'UninstallAll' { Invoke-UninstallAll }
             default { Show-MainMenu }
         }
     } catch {
