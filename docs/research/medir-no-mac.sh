@@ -127,14 +127,12 @@ else
         # O que o lsof DA e a porta local. E com ela da para fazer a captura mais estreita
         # possivel: so os pacotes daquela porta, so os cabecalhos, por alguns segundos.
         passo 'portas UDP locais do Discord'
-        PORTAS="$(printf '%s
-' "$UDP"             | grep ' UDP '             | grep -oE '[:.]([0-9]{2,5})$'             | tr -d ':.'             | sort -u)"
+        PORTAS="$(printf '%s\n' "$UDP"             | grep ' UDP '             | grep -oE '[:.]([0-9]{2,5})$'             | tr -d ':.'             | sort -u)"
 
         if [ -z "$PORTAS" ]; then
             aviso 'Nao consegui achar a porta do socket de voz. A call pode estar so comecando -- espere uns segundos e rode de novo.'
         else
-            printf '  %s
-' "$PORTAS"
+            printf '  %s\n' "$PORTAS"
 
             # O filtro so deixa passar a porta da voz. Nao e economia de disco: e o limite do que
             # esta medicao tem o direito de olhar na maquina de outra pessoa.
@@ -145,39 +143,56 @@ else
             done
             FILTRO="udp and ($FILTRO)"
 
-            passo "capturando 8 segundos de cabecalhos -- so a voz, so quem fala com quem"
-            printf '  %s%s%s
-' "$C_DIM" "  filtro: $FILTRO" "$C_OFF"
+            # A interface tem de ser escolhida: o tcpdump do macOS nao aceita `-i any`, ao
+            # contrario do Linux. Sem isto a captura falha em silencio e a medicao volta vazia
+            # sem dizer por que.
+            IFACE="$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')"
+            [ -n "$IFACE" ] || IFACE="en0"
 
-            # `-q` imprime so o resumo (origem, destino, tamanho) e NUNCA o conteudo do pacote.
-            # `-s 64` corta a captura no cabecalho, entao nem chega a ler a carga -- que, de
-            # qualquer forma, e audio cifrado.
-            CAPTURA="$(sudo tcpdump -n -q -s 64 -i any "$FILTRO" 2>/dev/null &                 CAP_PID=$!; sleep 8; kill "$CAP_PID" 2>/dev/null; wait "$CAP_PID" 2>/dev/null)"
+            passo "capturando ate 8 segundos de cabecalhos na $IFACE -- so a voz"
+            printf '  %sfiltro: %s%s\n' "$C_DIM" "$FILTRO" "$C_OFF"
 
-            printf '%s
-' "$CAPTURA" | head -12
+            # `-q` imprime so o resumo (origem, destino, tamanho) e NUNCA o conteudo do
+            # pacote. `-s 64` corta no cabecalho, entao a carga nem chega a ser lida -- e ela
+            # e audio cifrado de qualquer forma. `-c 200` normalmente encerra sozinho em menos
+            # de um segundo numa call ativa; os 8 segundos sao so o teto.
+            CAP="$(mktemp)"
+            sudo tcpdump -n -q -s 64 -c 200 -i "$IFACE" "$FILTRO" > "$CAP" 2>/dev/null &
+            TCPD=$!
+            sleep 8
+            # `sudo kill`, e nao `kill`: o tcpdump roda como root depois do exec, e uma conta
+            # comum nao consegue sinalizar um processo de root. Com `kill` puro o sinal era
+            # recusado, o tcpdump seguia vivo e o `wait` abaixo penduraria o script para sempre.
+            sudo kill "$TCPD" 2>/dev/null
+            wait "$TCPD" 2>/dev/null
+            CAPTURA="$(cat "$CAP")"
+            rm -f "$CAP"
 
-            # Os destinos sao o lado direito do `>`. Tudo que for endereco privado sai fora: nao
-            # e o servidor do Discord, e o roteador de casa ou a propria maquina.
-            DESTINOS="$(printf '%s
-' "$CAPTURA"                 | grep -oE '> [0-9]{1,3}(\.[0-9]{1,3}){3}\.'                 | sed 's/^> //; s/\.$//'                 | grep -vE '^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)'                 | sort -u)"
+            printf '%s\n' "$CAPTURA" | head -12
+
+            # Os destinos sao o lado direito do `>`. Endereco privado sai fora: nao e servidor
+            # do Discord, e o roteador de casa ou a propria maquina.
+            DESTINOS="$(printf '%s\n' "$CAPTURA" \
+                | grep -oE '> [0-9]{1,3}([.][0-9]{1,3}){3}[.]' \
+                | sed 's/^> //; s/[.]$//' \
+                | grep -vE '^(10[.]|127[.]|169[.]254[.]|192[.]168[.]|172[.](1[6-9]|2[0-9]|3[01])[.])' \
+                | sort -u)"
 
             if [ -z "$DESTINOS" ]; then
                 aviso 'A captura nao pegou nenhum destino publico. Voce estava mesmo numa call COM alguem, ou falando? Uma call vazia e silenciosa pode nao gerar trafego.'
             else
                 titulo 'os destinos da midia'
-                printf '  %s
-' "$DESTINOS"
+                printf '  %s\n' "$DESTINOS"
 
                 # Este e o numero que o projeto inteiro esta procurando. O `whois` de um IP
                 # devolve o bloco alocado (NetRange/CIDR) e a organizacao dona -- e o bloco e
                 # exatamente o que entraria numa linha de AllowedIPs.
                 titulo 'a quem pertence cada destino (e qual o bloco dele)'
                 for ip in $DESTINOS; do
-                    printf '
-  %s--- %s ---%s
-' "$C_BOLD" "$ip" "$C_OFF"
-                    whois "$ip" 2>/dev/null                         | grep -iE '^(netrange|cidr|netname|orgname|org-name|organization|descr|country|inetnum)'                         | head -12
+                    printf '\n  %s--- %s ---%s\n' "$C_BOLD" "$ip" "$C_OFF"
+                    whois "$ip" 2>/dev/null \
+                        | grep -iE '^(netrange|cidr|netname|orgname|org-name|organization|descr|country|inetnum)' \
+                        | head -12
                 done
             fi
         fi
