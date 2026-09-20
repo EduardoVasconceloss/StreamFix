@@ -37,6 +37,11 @@
 
 set -uo pipefail
 
+# Carimbo de versao. Existe porque em 20/09 uma execucao rodou uma copia antiga do arquivo e a
+# saida saiu identica a de antes -- tempo foi gasto procurando um bug que ja estava consertado.
+# Com isto, a primeira linha da medicao diz qual versao produziu o resto.
+VERSAO="2026-09-20c"
+
 SAIDA="$HOME/streamfix-medicao-$(date +%Y%m%d-%H%M).txt"
 
 if [ -t 1 ]; then
@@ -58,6 +63,8 @@ exec > >(tee -a "$SAIDA") 2>&1
 
 printf '\n  %sMedicao do StreamFix para macOS%s\n' "$C_CYAN$C_BOLD" "$C_OFF"
 printf '  %sNao instala nada. Nao mexe no seu Discord.%s\n' "$C_DIM" "$C_OFF"
+printf '  %sVersao %s%s
+' "$C_DIM" "$VERSAO" "$C_OFF"
 printf '  %sSaida: %s%s\n' "$C_DIM" "$SAIDA" "$C_OFF"
 
 if [ "$(uname -s)" != "Darwin" ]; then
