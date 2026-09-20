@@ -205,3 +205,83 @@ dá `(ALL) NOPASSWD: ALL` ao usuário `runner`, que ofusca a nossa regra. Fica p
 - **Se a regra restrita de sudoers recusa o resto**, numa conta comum.
 - **Se as duas interfaces coexistindo se comportam como a especificidade das rotas promete**, com
   tráfego real.
+
+---
+
+# Adendo: a primeira execução num Mac de verdade (20/09/2026)
+
+MacBook Pro, macOS 26.5.1, arm64, conta de administrador comum. Três achados, e o primeiro
+**invalidava o porte inteiro** — nenhum deles era alcançável pelo runner de CI.
+
+## 9. O `wg-quick` exige bash 4+, e o macOS traz o 3.2
+
+```
+--- wg-quick up ---
+wg-quick: Version mismatch: bash 3 detected, when bash 4+ required
+exit=1
+```
+
+Todas as operações de túnel falharam. A Apple parou no bash 3.2 por licença (GPLv2), e quem tem
+um bash moderno no Mac é o Homebrew.
+
+**Por que a medição no CI passou.** O runner do GitHub já tem o bash do Homebrew no `PATH`, então
+lá o `#!/usr/bin/env bash` do `wg-quick` encontrava um bash 5 e tudo subia. Num Mac comum, sob
+`sudo`, o `PATH` é higienizado e o `env bash` acha o `/bin/bash` 3.2 da Apple.
+
+O modo de falha existe **só** na combinação "Mac de verdade + sudo" — que é exatamente a
+combinação em que o StreamFix roda. É a justificativa mais forte que este projeto tem para não
+tratar CI como substituto de hardware real.
+
+**Consequência.** O `wg-quick` nunca é chamado direto: sempre por um interpretador absoluto
+(`BASH4_PADRAO` em `controle-wg.ts`, `wgq()` no instalador). A regra de sudoers precisa listar o
+interpretador também, senão o `sudo` vê um comando diferente do autorizado e volta a pedir senha
+no clique do Go Live. O instalador instala o bash pelo Homebrew se faltar, sem tocar no da Apple.
+
+## 10. O socket de voz do Discord não é conectado
+
+```
+COMMAND    PID   USER   FD   TYPE   DEVICE  SIZE/OFF NODE NAME
+Discord   1350 prodwb   39u  IPv4   0xd9b…       0t0  UDP *:49965
+```
+
+`UDP *:49965`, sem `->`. O Discord usa `sendto`/`recvfrom` com o endereço explícito em cada
+pacote, em vez de `connect()`. **A premissa da parte 1 do `medir-no-mac.sh` estava errada**: o
+`lsof` nunca revelaria o destino, por mais que se insistisse nele.
+
+O que o `lsof` dá é a **porta local**, e com ela dá para fazer a captura mais estreita possível —
+`tcpdump -q -s 64` filtrado naquela porta, por 8 segundos, cabeçalhos apenas. É o que o script
+faz agora.
+
+**A faixa da mídia continua sem medição**, e é o que falta para decidir se o macOS pode cortar
+por destino em vez de por tempo.
+
+## 11. O teste da regra de sudoers precisa de `sudo -k`
+
+```
+--- o NAO autorizado tem de ser RECUSADO ---
+outro comando:
+.CFUserTextEncoding
+.forward
+Library
+exit=0
+```
+
+Um comando fora da regra passou. Não porque a regra falhou: o `sudo` ainda tinha o **cache da
+senha** digitada minutos antes, e com o cache válido o `-n` passa em qualquer coisa que a conta
+possa fazer.
+
+E há uma segunda coisa que essa saída mostra, e que vale dizer com todas as letras:
+
+```
+User prodwb may run the following commands:
+    (ALL) ALL
+    (root) NOPASSWD: /opt/homebrew/bin/wg-quick up sfx-medicao, …
+```
+
+Numa conta de administrador do macOS — que é a conta da maioria das pessoas — o usuário **já
+tem `(ALL) ALL`**, com senha. A nossa regra não reduz privilégio nenhum: o que ela faz é
+dispensar a senha, e apenas para aqueles comandos. Essa é a descrição honesta dela, e é a que o
+README usa.
+
+O `sudo -k` antes do teste é o que torna a pergunta "esta regra recusa o resto?" respondível.
+Fica para a próxima execução.

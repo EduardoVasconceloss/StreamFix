@@ -23,6 +23,7 @@ const {
     nomeValido, perfilDeControleCurto, normalizarDestinos, mesmosDestinos,
     destinosPorInterface, interfaceComDestinos, fechouHandshake, perfisDaListagem,
     LIMITE_NOME, SUFIXO_CONTROLE, PRAZO_CURTO_MS, WG_QUICK_PADRAO, WG_PADRAO, DIR_PERFIS,
+    BASH4_PADRAO,
 } = require("../streamFix/tunnel/controle-wg.ts");
 
 const COMPLETO = "streamfix";
@@ -71,9 +72,14 @@ function cliFalso(roteiro) {
 
 function chaveDe(exe, args) {
     if (exe === "/bin/ls") return "ls";
-    // sudo -n /caminho/wg-quick up perfil  ->  "wg-quick up perfil"
+    // O wg-quick e sempre executado por um bash 4+ explicito (o macOS traz o 3.2), entao a
+    // forma e `sudo -n <bash> <wg-quick> up <perfil>`. O `wg` e binario e vai direto.
     const [, alvo, ...resto] = args;
     const nome = String(alvo).split("/").pop();
+    if (nome === "bash") {
+        const [script, sub] = resto;
+        return `wg-quick ${sub}`;
+    }
     if (nome === "wg-quick") return `wg-quick ${resto[0]}`;
     return `wg ${resto.join(" ")}`;
 }
@@ -399,4 +405,48 @@ test("toda chamada leva prazo: nada pode ficar pendurado no clique do Go Live", 
     await controle.estado(CONTROLE);
     assert.equal(chamadas.length > 0, true);
     assert.equal(chamadas.every(c => c.prazo === PRAZO_CURTO_MS), true);
+});
+
+// ---------------------------------------------------------------------------------------------
+// O bash 4: o achado que so um Mac de verdade entregou
+// ---------------------------------------------------------------------------------------------
+
+test("o wg-quick e executado por um bash 4+ explicito, nunca direto", async () => {
+    // Medido em 20/09 num Mac de verdade: `sudo wg-quick up` responde "Version mismatch: bash 3
+    // detected, when bash 4+ required". A Apple parou no bash 3.2, e sob `sudo` o PATH e
+    // higienizado, entao o `#!/usr/bin/env bash` do wg-quick acha o /bin/bash da Apple.
+    //
+    // O CI nao pegou porque o runner do GitHub ja tem o bash do Homebrew no PATH. Este teste
+    // existe para que ninguem "simplifique" isto de volta para uma chamada direta.
+    const { controle, chamadas } = montar({
+        "wg-quick up": "",
+        "wg show all allowed-ips": ALLOWED_IPS_CONTROLE,
+        "wg show all latest-handshakes": HANDSHAKE_FECHADO(),
+    });
+
+    await controle.subir(CONTROLE);
+
+    const up = chamadas.find(c => c.includes("up") && c.includes(CONTROLE));
+    assert.notEqual(up, undefined, "chamou o up");
+    // sudo, -n, <bash>, <wg-quick>, up, <perfil>
+    assert.equal(up[0], "sudo");
+    assert.equal(up[1], "-n");
+    assert.equal(up[2], BASH4_PADRAO, "o interpretador vem antes do script");
+    assert.equal(up[3], WG_QUICK_PADRAO);
+});
+
+test("o down tambem passa pelo bash", async () => {
+    const { controle, chamadas } = montar({ "wg-quick down": "" });
+    await controle.derrubar();
+    const down = chamadas.find(c => c.includes("down"));
+    assert.equal(down[2], BASH4_PADRAO);
+});
+
+test("o wg NAO passa pelo bash: ele e binario, nao script", async () => {
+    // Enfiar o `wg` no interpretador tambem quebraria, e por um motivo bobo -- o bash tentaria
+    // interpretar um executavel. A distincao importa na regra de sudoers, que lista os dois.
+    const { controle, chamadas } = montar({ "wg show all allowed-ips": ALLOWED_IPS_VAZIO });
+    await controle.estado(CONTROLE);
+    const show = chamadas.find(c => c.includes("show"));
+    assert.equal(show[2], WG_PADRAO, "o wg e chamado direto");
 });

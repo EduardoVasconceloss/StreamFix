@@ -14,9 +14,18 @@
 #      usuario ja tem `NOPASSWD: ALL`, entao la tudo passa e a medicao nao vale. Numa conta
 #      comum, como a sua, vale.
 #
-# O que ele faz: le sockets abertos (`lsof`), consulta a quem pertence um bloco de IP (`whois`),
-# e sobe um tunel WireGuard de brinquedo, apontado para um endereco reservado para documentacao
-# que nao existe de verdade. Nao captura pacote, nao le conteudo de nada, nao toca no Discord.
+# O que ele faz: le sockets abertos (`lsof`), captura 8 segundos de CABECALHOS da porta de voz
+# do Discord (`tcpdump -q -s 64`, so para saber com qual servidor ela fala), consulta a quem
+# pertence um bloco de IP (`whois`), e sobe um tunel WireGuard de brinquedo apontado para um
+# endereco reservado para documentacao, que nao existe de verdade.
+#
+# Sobre a captura, porque ela merece ser dita com todas as letras: ela e filtrada na porta da
+# voz, entao nenhum outro trafego seu entra; `-s 64` corta no cabecalho, entao a carga nem chega
+# a ser lida; e `-q` imprime so "quem falou com quem e quanto", nunca conteudo. O audio, de
+# qualquer forma, e cifrado. Ela existe porque o socket de voz do Discord NAO e conectado
+# (medido em 20/09), e sem isso nao ha como saber para onde a midia vai.
+#
+# Ele nao toca no seu Discord e nao instala nada do StreamFix.
 #
 # Uso:
 #   chmod +x medir-no-mac.sh
@@ -109,30 +118,68 @@ else
         echo "$UDP"
         printf '\n'
 
-        # Uma linha de socket conectado tem a forma `ip_local:porta->ip_remoto:porta`. So
-        # interessa o lado direito da seta, e so o que for IPv4 publico.
-        passo 'destinos remotos, extraidos das linhas acima'
-        DESTINOS="$(printf '%s\n' "$UDP" \
-            | grep ' UDP ' \
-            | grep -oE '\->[0-9]{1,3}(\.[0-9]{1,3}){3}' \
-            | sed 's/^->//' \
-            | sort -u)"
+        # **O socket de voz do Discord NAO e conectado.** Medido em 20/09, num Mac de verdade:
+        # o lsof mostra `UDP *:49965`, sem `->`, o que significa que o Discord usa sendto/recvfrom
+        # com o endereco explicito em cada pacote em vez de `connect()`. A premissa original desta
+        # medicao -- "o lsof mostra os dois lados" -- estava errada, e nenhuma quantidade de
+        # insistencia no lsof teria consertado isso.
+        #
+        # O que o lsof DA e a porta local. E com ela da para fazer a captura mais estreita
+        # possivel: so os pacotes daquela porta, so os cabecalhos, por alguns segundos.
+        passo 'portas UDP locais do Discord'
+        PORTAS="$(printf '%s
+' "$UDP"             | grep ' UDP '             | grep -oE '[:.]([0-9]{2,5})$'             | tr -d ':.'             | sort -u)"
 
-        if [ -z "$DESTINOS" ]; then
-            aviso 'Ha sockets UDP, mas nenhum conectado a um destino. A call pode estar so comecando -- espere uns segundos e rode de novo.'
+        if [ -z "$PORTAS" ]; then
+            aviso 'Nao consegui achar a porta do socket de voz. A call pode estar so comecando -- espere uns segundos e rode de novo.'
         else
-            printf '%s\n' "$DESTINOS"
+            printf '  %s
+' "$PORTAS"
 
-            # Este e o numero que o projeto inteiro esta procurando. O `whois` de um IP devolve
-            # o bloco alocado (NetRange/CIDR) e a organizacao dona -- e o bloco e exatamente o
-            # que entraria numa linha de AllowedIPs.
-            titulo 'a quem pertence cada destino (e qual o bloco dele)'
-            for ip in $DESTINOS; do
-                printf '\n  %s--- %s ---%s\n' "$C_BOLD" "$ip" "$C_OFF"
-                whois "$ip" 2>/dev/null \
-                    | grep -iE '^(netrange|cidr|netname|orgname|org-name|organization|descr|country|inetnum)' \
-                    | head -12
+            # O filtro so deixa passar a porta da voz. Nao e economia de disco: e o limite do que
+            # esta medicao tem o direito de olhar na maquina de outra pessoa.
+            FILTRO=""
+            for porta in $PORTAS; do
+                [ -n "$FILTRO" ] && FILTRO="$FILTRO or "
+                FILTRO="${FILTRO}port $porta"
             done
+            FILTRO="udp and ($FILTRO)"
+
+            passo "capturando 8 segundos de cabecalhos -- so a voz, so quem fala com quem"
+            printf '  %s%s%s
+' "$C_DIM" "  filtro: $FILTRO" "$C_OFF"
+
+            # `-q` imprime so o resumo (origem, destino, tamanho) e NUNCA o conteudo do pacote.
+            # `-s 64` corta a captura no cabecalho, entao nem chega a ler a carga -- que, de
+            # qualquer forma, e audio cifrado.
+            CAPTURA="$(sudo tcpdump -n -q -s 64 -i any "$FILTRO" 2>/dev/null &                 CAP_PID=$!; sleep 8; kill "$CAP_PID" 2>/dev/null; wait "$CAP_PID" 2>/dev/null)"
+
+            printf '%s
+' "$CAPTURA" | head -12
+
+            # Os destinos sao o lado direito do `>`. Tudo que for endereco privado sai fora: nao
+            # e o servidor do Discord, e o roteador de casa ou a propria maquina.
+            DESTINOS="$(printf '%s
+' "$CAPTURA"                 | grep -oE '> [0-9]{1,3}(\.[0-9]{1,3}){3}\.'                 | sed 's/^> //; s/\.$//'                 | grep -vE '^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)'                 | sort -u)"
+
+            if [ -z "$DESTINOS" ]; then
+                aviso 'A captura nao pegou nenhum destino publico. Voce estava mesmo numa call COM alguem, ou falando? Uma call vazia e silenciosa pode nao gerar trafego.'
+            else
+                titulo 'os destinos da midia'
+                printf '  %s
+' "$DESTINOS"
+
+                # Este e o numero que o projeto inteiro esta procurando. O `whois` de um IP
+                # devolve o bloco alocado (NetRange/CIDR) e a organizacao dona -- e o bloco e
+                # exatamente o que entraria numa linha de AllowedIPs.
+                titulo 'a quem pertence cada destino (e qual o bloco dele)'
+                for ip in $DESTINOS; do
+                    printf '
+  %s--- %s ---%s
+' "$C_BOLD" "$ip" "$C_OFF"
+                    whois "$ip" 2>/dev/null                         | grep -iE '^(netrange|cidr|netname|orgname|org-name|organization|descr|country|inetnum)'                         | head -12
+                done
+            fi
         fi
     fi
 
@@ -164,6 +211,44 @@ else
         ruim 'O brew terminou e o wg-quick nao apareceu. Pare por aqui.'
     else
         WG_QUICK="$(command -v wg-quick)"
+
+        # **O wg-quick exige bash 4+, e o macOS traz o 3.2.** Medido em 20/09, num Mac de
+        # verdade: `sudo wg-quick up` respondeu "Version mismatch: bash 3 detected, when bash 4+
+        # required" e nao subiu nada.
+        #
+        # Por que o CI nao pegou: o runner do GitHub ja tem o bash do Homebrew no PATH, entao la
+        # o `#!/usr/bin/env bash` do wg-quick encontrava um bash 5. Num Mac comum, sob `sudo`, o
+        # PATH e higienizado e o `env bash` acha o /bin/bash 3.2 da Apple. E um modo de falha que
+        # SO aparece na combinacao "Mac de verdade + sudo", que e exatamente a combinacao em que
+        # o StreamFix vai rodar.
+        #
+        # A saida e chamar o interpretador explicitamente, em vez de confiar no PATH do sudo.
+        BASH4=""
+        for candidato in "$(brew --prefix 2>/dev/null)/bin/bash" /opt/homebrew/bin/bash /usr/local/bin/bash; do
+            [ -x "$candidato" ] || continue
+            if [ "$("$candidato" -c 'echo ${BASH_VERSINFO[0]}' 2>/dev/null)" -ge 4 ] 2>/dev/null; then
+                BASH4="$candidato"
+                break
+            fi
+        done
+
+        if [ -z "$BASH4" ]; then
+            aviso 'Nenhum bash 4+ nesta maquina. O wg-quick nao roda sem um.'
+            passo 'instalando o bash pelo Homebrew (nao mexe no /bin/bash da Apple)'
+            brew install bash >/dev/null 2>&1
+            for candidato in "$(brew --prefix 2>/dev/null)/bin/bash" /opt/homebrew/bin/bash /usr/local/bin/bash; do
+                [ -x "$candidato" ] && BASH4="$candidato" && break
+            done
+        fi
+
+        if [ -n "$BASH4" ]; then
+            ok "bash 4+ em $BASH4 ($("$BASH4" -c 'echo $BASH_VERSION'))"
+        else
+            ruim 'Sem bash 4+, o wg-quick nao vai subir tunel nenhum. O resto da parte 2 vai falhar.'
+        fi
+
+        # Daqui para baixo, TODA chamada ao wg-quick passa pelo interpretador explicito.
+        wgq() { sudo "$BASH4" "$WG_QUICK" "$@"; }
         ok "wg-quick em $WG_QUICK"
         wg --version
 
@@ -197,7 +282,7 @@ else
         sudo wg show "$PERFIL"; echo "exit=$?"
 
         echo '--- wg-quick up ---'
-        sudo wg-quick up "$PERFIL"; echo "exit=$?"
+        wgq up "$PERFIL"; echo "exit=$?"
 
         # Ja sabemos do runner que isto NAO resolve: `wg` nao consulta o .name, entao o nome do
         # perfil nao serve como argumento no Darwin. Fica aqui para confirmar numa instalacao de
@@ -226,9 +311,9 @@ else
         fi
 
         echo '--- wg-quick down ---'
-        sudo wg-quick down "$PERFIL"; echo "exit=$?"
+        wgq down "$PERFIL"; echo "exit=$?"
         echo '--- wg-quick down DE NOVO (ja esta fora) ---'
-        sudo wg-quick down "$PERFIL"; echo "exit=$?"
+        wgq down "$PERFIL"; echo "exit=$?"
 
         # ---------------------------------------------------------------------------------
         # A regra do sudoers: a medicao que so uma conta comum faz
@@ -246,7 +331,7 @@ else
         # compensacao `wg` e leitura pura, muito mais barato em risco do que `wg-quick`.
         WG_BIN="$(command -v wg)"
         sudo tee /etc/sudoers.d/streamfix-medicao >/dev/null <<EOF
-$USUARIO ALL=(root) NOPASSWD: $WG_QUICK up $PERFIL, $WG_QUICK down $PERFIL, $WG_BIN show *
+$USUARIO ALL=(root) NOPASSWD: $BASH4 $WG_QUICK up $PERFIL, $BASH4 $WG_QUICK down $PERFIL, $WG_BIN show *
 EOF
         sudo chmod 440 /etc/sudoers.d/streamfix-medicao
 
@@ -256,19 +341,30 @@ EOF
         echo '--- o que esta liberado sem senha ---'
         sudo -n -l 2>&1 | tail -15
 
+        # Tambem depois do -k: com cache valido, "passou sem senha" nao prova que a regra existe.
+        sudo -k
         echo '--- o AUTORIZADO tem de passar sem senha ---'
-        sudo -n "$WG_QUICK" up "$PERFIL"; echo "exit=$?"
-        sudo -n "$WG_QUICK" down "$PERFIL"; echo "exit=$?"
+        sudo -n "$BASH4" "$WG_QUICK" up "$PERFIL"; echo "exit=$?"
+        sudo -n "$BASH4" "$WG_QUICK" down "$PERFIL"; echo "exit=$?"
 
+        # **`sudo -k` antes, ou a medicao mente.** Em 20/09 este teste deu "autorizado" para um
+        # comando que a regra nao lista -- nao porque a regra falhou, e sim porque o `sudo` ainda
+        # tinha o cache da senha digitada minutos antes, e com o cache valido o `-n` passa em
+        # qualquer coisa que a conta possa fazer. Numa conta de administrador do macOS, que ja
+        # tem `(ALL) ALL`, isso e tudo.
+        #
+        # O `-k` invalida o cache, e so entao a pergunta "esta regra recusa o resto?" tem
+        # sentido. Depois dele, o que passar sem senha passou POR CAUSA da regra.
+        sudo -k
         echo '--- o NAO autorizado tem de ser RECUSADO (esta e a medicao que o CI nao faz) ---'
-        echo "outro perfil:"; sudo -n "$WG_QUICK" up outro-qualquer 2>&1 | head -3; echo "exit=${PIPESTATUS[0]}"
+        echo "outro perfil:"; sudo -n "$BASH4" "$WG_QUICK" up outro-qualquer 2>&1 | head -3; echo "exit=${PIPESTATUS[0]}"
         echo "outro comando:"; sudo -n /bin/ls /var/root 2>&1 | head -3; echo "exit=${PIPESTATUS[0]}"
 
         # Nao deixar rastro: nem a concessao de privilegio, nem o perfil de brinquedo.
         titulo 'limpando'
         sudo rm -f /etc/sudoers.d/streamfix-medicao
         sudo rm -f "/etc/wireguard/$PERFIL.conf"
-        sudo wg-quick down "$PERFIL" >/dev/null 2>&1
+        wgq down "$PERFIL" >/dev/null 2>&1
         ok 'regra de sudoers removida, perfil de brinquedo apagado, nenhuma interface de pe'
         wg show interfaces
     fi
