@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.4.0](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.3.1...v2.4.0) (2026-09-20)
+
+
+### Features
+
+* desinstalar o StreamFix pela janela e pelo terminal, e consertar o winget ([b0ddd75](https://github.com/EduardoVasconceloss/StreamFix/commit/b0ddd75af55c6599a038a3c4d8259febd37e2680))
+* o controle do tunel para macOS, por wg-quick ([3d9499b](https://github.com/EduardoVasconceloss/StreamFix/commit/3d9499bf73445353f803ddb3261f13be141056df))
+* o instalador de shell monta o tunel no macOS ([e74315b](https://github.com/EduardoVasconceloss/StreamFix/commit/e74315be9427f141aad7da3907da074819f1692b))
+* o perfil do macOS sai sem AllowedApps e com nome de controle curto ([f007e8f](https://github.com/EduardoVasconceloss/StreamFix/commit/f007e8fa87298989a3a52b922a6420ab33b13a97))
+
 ## [2.3.1](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.3.0...v2.3.1) (2026-09-12)
 
 
