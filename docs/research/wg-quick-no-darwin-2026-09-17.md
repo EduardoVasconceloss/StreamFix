@@ -285,3 +285,104 @@ README usa.
 
 O `sudo -k` antes do teste é o que torna a pergunta "esta regra recusa o resto?" respondível.
 Fica para a próxima execução.
+
+---
+
+# Adendo 2: a medição que fechou as duas perguntas (20/09/2026, 20h46)
+
+Mesma máquina do adendo 1, agora com o script corrigido. **As duas perguntas que estavam abertas
+desde 11/09 foram respondidas.**
+
+## 12. A mídia do Discord sai pela Cloudflare, em `104.16.0.0/12`
+
+O achado que o projeto perseguia desde 11/09. Captura filtrada na porta de voz do Discord:
+
+```
+20:46:50.497512 IP 104.29.142.186.19313 > 192.168.15.6.49871: UDP, length 216
+20:46:50.618942 IP 192.168.15.6.49871 > 104.29.142.186.19313: UDP, length 60
+```
+
+e o `whois` do destino:
+
+```
+NetRange:       104.16.0.0 - 104.31.255.255
+CIDR:           104.16.0.0/12
+NetName:        CLOUDFLARENET
+OrgName:        Cloudflare, Inc.
+```
+
+Duas coisas de uma vez:
+
+1. **A mídia é Cloudflare, e não a Cloudflare do controle.** O perfil de controle leva
+   `162.159.128.0/17`; a mídia está em `104.16.0.0/12`. São blocos diferentes da mesma empresa, e
+   é por isso que o perfil de controle nunca carregou mídia — o que 11/09 tinha medido pelo
+   efeito (~9 KB em 20 s) e nunca pela causa.
+
+2. **A faixa é larga demais para servir de `AllowedIPs`.** `104.16.0.0/12` é um dos blocos
+   principais da Cloudflare, por onde passa uma fração enorme da web. Mandá-lo inteiro pelo túnel
+   não seria "só o Discord": seria boa parte da internet, e de forma permanente em vez de por
+   segundos.
+
+**Consequência: o corte por tempo fica.** A decisão de 17/09 estava certa, e agora está medida em
+vez de suposta. Estreitar para algo como `104.29.142.0/24` foi considerado e recusado: é **uma**
+amostra, de **uma** região, e uma lista curta aparece como transmissão recusada — o modo de falha
+que este projeto existe para evitar. Reabrir isso exigiria amostras de várias regiões e de vários
+dias, e o ganho seria pequeno diante do risco.
+
+Fica registrado para quem vier depois: se a Cloudflare publicar um bloco dedicado a `discord.media`,
+ou se o Discord voltar a servir mídia de faixa própria, o corte por destino volta à mesa.
+
+## 13. A regra restrita de sudoers recusa o resto — medido
+
+A pergunta que o CI não podia responder, agora com `sudo -k` antes:
+
+```
+User prodwb may run the following commands:
+    (ALL) ALL
+    (root) NOPASSWD: /opt/homebrew/bin/bash /opt/homebrew/bin/wg-quick up sfx-medicao, …
+
+--- o AUTORIZADO tem de passar sem senha ---
+exit=0
+--- o NAO autorizado tem de ser RECUSADO ---
+outro perfil:  sudo: a password is required   exit=1
+outro comando: sudo: a password is required   exit=1
+```
+
+O autorizado passa sem senha; um perfil de outro nome e um comando qualquer são recusados. A
+regra faz exatamente o que promete.
+
+Continua valendo a ressalva do adendo 1: numa conta de administrador o usuário **já tem
+`(ALL) ALL`** com senha. A regra não reduz privilégio — ela dispensa a senha, e só para aqueles
+comandos.
+
+## 14. `wg show <utunN> …` responde em DUAS colunas, não três
+
+Com privilégio, finalmente deu para ver o formato:
+
+```
+--- allowed-ips aplicados, perguntando pelo utun4 ---
+TCYzWJaqlq5rgtNBtMeeCAnGS4FYQ/Z/pXnl98ho1zw=    192.0.2.0/24
+--- handshake (endpoint reservado: tem de ser 0) ---
+TCYzWJaqlq5rgtNBtMeeCAnGS4FYQ/Z/pXnl98ho1zw=    0
+```
+
+Perguntando por **uma** interface, o `wg` devolve `chave-do-peer<TAB>valor`. Ele só prefixa o nome
+da interface quando se pergunta por `all`.
+
+**E isto era um bug à espera.** O `controle-wg.ts` perguntava por `all` e supunha três colunas —
+suposição que nunca tinha sido medida, porque no runner de 17/09 a pergunta morreu em "Permission
+denied" antes de imprimir. Se o formato do `all` fosse outro, o mapa sairia vazio, nenhuma
+interface casaria com nenhum perfil, e o controle recusaria **toda transmissão boa** dizendo que o
+túnel não está de pé.
+
+O controle passa a listar as interfaces e perguntar uma a uma. Custa um processo a mais por
+interface e, em troca, os dois formatos que ele lê foram medidos.
+
+## 15. Confirmações
+
+- `wg show <perfil>` continua **não** resolvendo o nome do perfil, igual ao runner.
+- O mapeamento `/var/run/wireguard/sfx-medicao.name` → `utun4` existe e é só-root.
+- `latest-handshakes` deu `0` contra o endpoint reservado, confirmando o achado 4 na prática: o
+  `up` devolveu `exit=0` e o túnel não estava de pé.
+- `down` de quem já está fora responde `` `sfx-medicao' is not a WireGuard interface `` e sai com 1
+  — texto diferente do `does not exist` que o perfil inexistente dá, mas nada aqui depende disso.
