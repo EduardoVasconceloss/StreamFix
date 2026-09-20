@@ -823,6 +823,32 @@ Confere ($r[1] -eq 'DNS = 1.1.1.1') 'DNS que faltava entra depois do Address'
         assert.match(saida, /erros=0\s*$/, saida);
     });
 
+    test("a desinstalacao so oferece remover o que o registro diz que o StreamFix instalou", () => {
+        // Sem registro, oferecer Git ou Node apagaria programa que a pessoa ja tinha antes.
+        const { execFileSync } = require("node:child_process");
+        const { mkdtempSync, rmSync } = require("node:fs");
+        const { tmpdir } = require("node:os");
+        const pasta = join(RAIZ, "installer").replace(/'/g, "''");
+        const temp = mkdtempSync(join(tmpdir(), "sf-desinstala-"));
+        const script = `
+$ErrorActionPreference = 'Stop'
+$env:LOCALAPPDATA = '${temp.replace(/'/g, "''")}'
+. (Join-Path '${pasta}' 'StreamFix-Installer.ps1') -NoAutoRun
+$sem = @(Get-UninstallPlan $null).Count
+Add-InstallRecord 'git' $true
+Add-InstallRecord 'wiresock' $true
+$com = (@(Get-UninstallPlan $null) | ForEach-Object { $_.Id }) -join ','
+Remove-InstallRecordEntry @('git', 'wiresock')
+"sem=$sem com=$com vazio=$(-not (Test-Path $InstallRecordFile))"`;
+        try {
+            const saida = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script],
+                { encoding: "utf8", timeout: 60000 });
+            assert.match(saida, /sem=0 com=git,wiresock vazio=True\s*$/, saida);
+        } finally {
+            rmSync(temp, { recursive: true, force: true });
+        }
+    });
+
     test("a lista do provisionador e o fecho dos imports, senao nada resolve na maquina de quem instala", () => {
         // O provisionador e baixado para um diretorio temporario junto com o que ele importa.
         // Faltar um modulo so aparece na maquina da pessoa, no meio da instalacao.
