@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.4](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.4.3...v2.4.4) (2026-09-21)
+
+
+### Bug Fixes
+
+* o asset do Equilotl nao tem "darwin" no nome, e o 404 era silencioso ([a47fa9b](https://github.com/EduardoVasconceloss/StreamFix/commit/a47fa9b563433e5ff4bae8378807c7b1efd88316))
+
 ## [2.4.3](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.4.2...v2.4.3) (2026-09-21)
 
 
