@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.3](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.4.2...v2.4.3) (2026-09-21)
+
+
+### Bug Fixes
+
+* o ping do macOS e BSD, e o instalador escondia o motivo da falha ([71fe716](https://github.com/EduardoVasconceloss/StreamFix/commit/71fe716ba9bcec5022060084389fbaf5b3b67fa9))
+
 ## [2.4.2](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.4.1...v2.4.2) (2026-09-21)
 
 
