@@ -1376,9 +1376,18 @@ macos_provision_tunnel() {
 
     step 'Trocando o convite por um endereco na saida' >&2
     if ! printf '%s' "$convite" | node "$prov/installer/provisiona.mjs" "${args[@]}" > "$tmp/resposta.json"; then
-        # O provisionador ja explicou o motivo em stderr, que a pessoa acabou de ver.
+        # **O motivo tem de sair daqui.** O provisionador explica a falha no JSON que escreve
+        # em stdout -- e stdout esta redirecionado para o arquivo. Sem esta leitura, a pessoa
+        # ve so "nao consegui montar o tunel", que nao diz se o problema foi o convite, a
+        # saida fora do ar ou a medicao do MTU. Foi exatamente o que aconteceu na primeira
+        # instalacao num Mac, em 20/09: a causa (ping do macOS) ficou escondida no arquivo.
+        local motivo=""
+        [ -s "$tmp/resposta.json" ] && motivo="$(tunnel_field "$tmp" erro)"
         rm -rf "$tmp" "$prov"
-        fail 'Nao consegui montar o tunel. Confira o convite e o endereco da saida.'
+        if [ -n "$motivo" ]; then
+            fail "Nao consegui montar o tunel: $motivo"
+        fi
+        fail 'Nao consegui montar o tunel, e o provisionador nao disse por que. Confira o convite e o endereco da saida.'
     fi
     rm -rf "$prov"
 

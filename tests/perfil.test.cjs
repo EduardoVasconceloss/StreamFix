@@ -269,3 +269,50 @@ test("o perfil do macOS continua terminando em linha vazia", () => {
 test("o padrao continua sendo COM split por app: so o macOS pede o contrario", () => {
     assert.match(gerarPerfil(BASE), /^#@ws:AllowedApps = Discord$/m);
 });
+
+// ---------------------------------------------------------------------------------------------
+// O ping de cada sistema
+//
+// Tres pings diferentes, e nao dois. Custou uma instalacao inteira descobrir: na primeira
+// tentativa num Mac, em 20/09, o provisionamento morreu em "nao consegui medir o MTU" porque o
+// ping do macOS e BSD e nao entende as flags do GNU.
+// ---------------------------------------------------------------------------------------------
+
+test("o macOS tem o seu proprio ping, e nao o do Linux", () => {
+    const mac = comandoPing("8.8.8.8", 1472, "darwin").args;
+
+    // `-M do` NAO existe no ping do macOS: ele recusa a linha inteira, nenhum alvo responde, e a
+    // medicao devolve null. O equivalente la e `-D`.
+    assert.ok(!mac.includes("-M"), "-M nao existe no ping do macOS");
+    assert.ok(mac.includes("-D"), "no macOS, nao-fragmentar e -D");
+
+    // `-W` e em MILISSEGUNDOS no macOS e em SEGUNDOS no Linux. Um `-W 2` la e um prazo de dois
+    // milissegundos -- curto demais para qualquer resposta, e sem erro nenhum para denunciar.
+    assert.equal(mac[mac.indexOf("-W") + 1], "2000", "no macOS o -W e em milissegundos");
+});
+
+test("o Linux continua com as flags do GNU", () => {
+    const linux = comandoPing("8.8.8.8", 1472, "linux").args;
+    assert.ok(linux.includes("-M"), "no Linux, nao-fragmentar e -M do");
+    assert.equal(linux[linux.indexOf("-M") + 1], "do");
+    assert.equal(linux[linux.indexOf("-W") + 1], "2", "no Linux o -W e em segundos");
+});
+
+test("o Windows continua com as flags dele", () => {
+    const win = comandoPing("8.8.8.8", 1472, "win32").args;
+    assert.ok(win.includes("-f"), "no Windows, nao-fragmentar e -f");
+    assert.ok(win.includes("-l"), "e a carga e -l");
+});
+
+test("os tres pedem UM pacote e dizem a carga", () => {
+    // Errar isto faz a busca binaria medir outra coisa, e o erro aparece semanas depois como
+    // "as vezes a stream trava".
+    for (const [plataforma, flagConta, flagCarga] of [
+        ["darwin", "-c", "-s"], ["linux", "-c", "-s"], ["win32", "-n", "-l"]
+    ]) {
+        const args = comandoPing("8.8.8.8", 1400, plataforma).args;
+        assert.equal(args[args.indexOf(flagConta) + 1], "1", `${plataforma}: um pacote so`);
+        assert.equal(args[args.indexOf(flagCarga) + 1], "1400", `${plataforma}: a carga pedida`);
+        assert.equal(args[args.length - 1], "8.8.8.8", `${plataforma}: o host por ultimo`);
+    }
+});

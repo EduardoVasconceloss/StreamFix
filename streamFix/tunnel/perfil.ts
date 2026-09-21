@@ -249,9 +249,22 @@ export function comandoPing(host: string, carga: number, plataforma: string) {
     exigir("host", host);
     if (!Number.isInteger(carga) || carga < 0) throw new Error("perfil: carga invalida");
 
-    return plataforma === "win32"
-        ? { exe: "ping", args: ["-n", "1", "-w", "2000", "-f", "-l", String(carga), host] }
-        : { exe: "ping", args: ["-c", "1", "-W", "2", "-M", "do", "-s", String(carga), host] };
+    // Tres pings diferentes, e nao dois. O do macOS e BSD, nao GNU:
+    //
+    //   - "nao fragmente" e `-M do` no Linux e `-D` no macOS. O `-M` nem existe la, e o ping
+    //     recusa a linha inteira -- entao NENHUM alvo responde, a medicao devolve `null` e o
+    //     provisionamento aborta em "nao consegui medir o MTU". Foi o que aconteceu na primeira
+    //     instalacao num Mac, em 20/09.
+    //   - `-W` e em SEGUNDOS no Linux e em MILISSEGUNDOS no macOS. Um `-W 2` la e um prazo de
+    //     dois milissegundos, curto demais para qualquer resposta chegar -- o mesmo sintoma,
+    //     por outra causa, e ainda mais dificil de ver porque o comando nao da erro.
+    if (plataforma === "win32") {
+        return { exe: "ping", args: ["-n", "1", "-w", "2000", "-f", "-l", String(carga), host] };
+    }
+    if (plataforma === "darwin") {
+        return { exe: "ping", args: ["-c", "1", "-W", "2000", "-D", "-s", String(carga), host] };
+    }
+    return { exe: "ping", args: ["-c", "1", "-W", "2", "-M", "do", "-s", String(carga), host] };
 }
 
 /**
