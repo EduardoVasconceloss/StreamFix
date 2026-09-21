@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.4.2](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.4.1...v2.4.2) (2026-09-21)
+
+
+### Bug Fixes
+
+* o provisionador nao era montado inteiro, e o Windows quebrou junto ([1981a35](https://github.com/EduardoVasconceloss/StreamFix/commit/1981a3555ef095bfe8e8ce3c00a871b4cbea9255))
+* o teste de desinstalacao derrubava o CI no Linux ([d83ccb1](https://github.com/EduardoVasconceloss/StreamFix/commit/d83ccb1eff9269edc020fac67cf935d3e07e6e00))
+
 ## [2.4.1](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.4.0...v2.4.1) (2026-09-20)
 
 
