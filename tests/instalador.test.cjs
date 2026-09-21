@@ -823,7 +823,12 @@ Confere ($r[1] -eq 'DNS = 1.1.1.1') 'DNS que faltava entra depois do Address'
         assert.match(saida, /erros=0\s*$/, saida);
     });
 
-    test("a desinstalacao so oferece remover o que o registro diz que o StreamFix instalou", () => {
+    test("a desinstalacao so oferece remover o que o registro diz que o StreamFix instalou", {
+        // Mesma guarda do teste acima, e pela mesma razao: ele EXECUTA o PowerShell, que so
+        // existe no Windows. Sem ela o job de ubuntu-latest morre em
+        // "spawnSync powershell.exe ENOENT" -- e foi o que deixou a main vermelha em 20/09.
+        skip: process.platform !== "win32" && "so ha Windows PowerShell no Windows"
+    }, () => {
         // Sem registro, oferecer Git ou Node apagaria programa que a pessoa ja tinha antes.
         const { execFileSync } = require("node:child_process");
         const { mkdtempSync, rmSync } = require("node:fs");
