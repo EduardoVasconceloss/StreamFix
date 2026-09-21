@@ -886,12 +886,23 @@ describe("deriva entre o instalador de Windows e o de shell", () => {
         join(RAIZ, "streamFix", "tunnel", "controle-wg.ts"), "utf8"
     );
 
-    /** Le um array de literais de string, do .ps1 ou do .sh. */
+    /**
+     * Le um array de literais de string, do .ps1 ou do .sh.
+     *
+     * Descarta as linhas de comentario ANTES de procurar o `)` que fecha. Sem isso, um `)`
+     * dentro de um comentario -- um "(macOS)" qualquer -- corta a lista no meio, e o teste
+     * acusa como faltando um arquivo que esta la. Aconteceu.
+     */
     function listaDe(texto, abertura) {
         const i = texto.indexOf(abertura);
         assert.notEqual(i, -1, `nao achei ${abertura}`);
-        const fecha = texto.indexOf(")", i);
-        return [...texto.slice(i, fecha).matchAll(/['"]([^'"]+)['"]/g)].map(m => m[1]);
+        const semComentario = texto
+            .slice(i)
+            .split("\n")
+            .filter(l => !l.trim().startsWith("#"))
+            .join("\n");
+        const fecha = semComentario.indexOf(")", abertura.length);
+        return [...semComentario.slice(0, fecha).matchAll(/['"]([^'"]+)['"]/g)].map(m => m[1]);
     }
 
     test("os dois instaladores copiam exatamente os mesmos modulos do plugin", () => {
@@ -926,6 +937,53 @@ describe("deriva entre o instalador de Windows e o de shell", () => {
             !/repo_file "\$file" > "\$target\/\$\(basename/.test(SHELL),
             "basename achataria a pasta tunnel/"
         );
+    });
+
+    test("as duas listas do provisionador cobrem todo import do provisiona.mjs", () => {
+        // A deriva que isto pega, e que passou batido na v2.4.0 e na v2.4.1: o provisiona.mjs
+        // ganhou um import de controle-wg.ts e a lista do .ps1 nao ganhou o arquivo. O
+        // provisionador e montado num diretorio temporario com so o que a lista diz; um modulo
+        // que falta nao da aviso nenhum, da ERR_MODULE_NOT_FOUND no import e mata o
+        // provisionamento inteiro -- depois de a pessoa ja ter digitado o convite.
+        const PROV = readFileSync(join(RAIZ, "installer", "provisiona.mjs"), "utf8");
+
+        // `from "../streamFix/tunnel/perfil.ts"` -> `streamFix/tunnel/perfil.ts`
+        const importados = [...PROV.matchAll(/from\s+"\.\.\/([^"]+)"/g)].map(m => m[1]);
+        assert.ok(importados.length > 0, "nao achei import relativo nenhum");
+
+        const noPs1 = listaDe(INSTALADOR, "$ProvisioningFiles = @(");
+        const noSh = listaDe(SHELL, "PROVISIONING_FILES=(");
+
+        for (const arquivo of importados) {
+            assert.ok(noPs1.includes(arquivo), `${arquivo} e importado e o .ps1 nao o baixa`);
+            assert.ok(noSh.includes(arquivo), `${arquivo} e importado e o .sh nao o baixa`);
+        }
+    });
+
+    test("as duas listas do provisionador sao a mesma", () => {
+        const noPs1 = listaDe(INSTALADOR, "$ProvisioningFiles = @(");
+        const noSh = listaDe(SHELL, "PROVISIONING_FILES=(");
+        assert.deepEqual([...noSh].sort(), [...noPs1].sort());
+    });
+
+    test("cada arquivo das listas existe em disco", () => {
+        // Um nome errado na lista falha igual a um que falta, e e mais dificil de ver.
+        for (const arquivo of listaDe(SHELL, "PROVISIONING_FILES=(")) {
+            assert.ok(existsSync(join(RAIZ, arquivo)), `${arquivo} esta na lista e nao existe`);
+        }
+    });
+
+    test("o instalador de shell monta o provisionador em vez de chamar o vizinho", () => {
+        // A release publica o streamfix-installer.sh sozinho, como asset: quem baixa de la nao
+        // tem provisiona.mjs ao lado. Chamar $SCRIPT_DIR falharia depois de instalar o
+        // wireguard-tools e pedir o convite -- no pior momento possivel.
+        const codigo = SHELL.split("\n").filter(l => !l.trim().startsWith("#"));
+        assert.deepEqual(
+            codigo.filter(l => /\$SCRIPT_DIR\/provisiona\.mjs/.test(l)), [],
+            "nao pode chamar o provisionador pelo caminho do proprio script"
+        );
+        assert.match(SHELL, /stage_provisioner\(\) \{/);
+        assert.match(SHELL, /node "\$prov\/installer\/provisiona\.mjs"/);
     });
 
     test("os dois instaladores apontam para a mesma saida", () => {

@@ -1299,6 +1299,10 @@ function Test-SameRoute([string] $a, [string] $b) {
 $ProvisioningFiles = @(
     'installer/provisiona.mjs',
     'streamFix/tunnel/perfil.ts',
+    # Entrou quando o provisionador passou a validar o nome do perfil para o wg-quick (macOS).
+    # Faltar aqui nao da erro no Windows por causa do macOS: da ERR_MODULE_NOT_FOUND no import, e
+    # o provisionamento morre inteiro. Um teste de drift compara esta lista com os imports reais.
+    'streamFix/tunnel/controle-wg.ts',
     'provisionamento/cliente.ts',
     'provisionamento/chaves.ts'
 )

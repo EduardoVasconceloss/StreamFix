@@ -1252,6 +1252,22 @@ SUDOERS_FILE="/etc/sudoers.d/streamfix"
 TUNNEL_PROFILE="streamfix"
 TUNNEL_PROFILE_CTL="streamfix-ctl"
 
+# O fecho transitivo do provisionador: ele e os modulos que ele importa. Espelha o
+# $ProvisioningFiles do StreamFix-Installer.ps1, e um teste de drift compara os dois com os
+# imports reais do provisiona.mjs.
+#
+# **Por que baixar em vez de usar o arquivo ao lado.** A release publica o
+# streamfix-installer.sh sozinho, como asset. Quem baixa de la nao tem vizinho nenhum, e
+# chamar `$SCRIPT_DIR/provisiona.mjs` falharia depois de ja ter instalado o wireguard-tools e
+# pedido o convite -- no pior momento possivel, com o convite ja digitado.
+PROVISIONING_FILES=(
+    "installer/provisiona.mjs"
+    "streamFix/tunnel/perfil.ts"
+    "streamFix/tunnel/controle-wg.ts"
+    "provisionamento/cliente.ts"
+    "provisionamento/chaves.ts"
+)
+
 # O bash 4+ que executa o wg-quick. Descoberto na instalacao e usado em todas as chamadas.
 BASH4=""
 
@@ -1331,9 +1347,22 @@ ask_invite() {
 # O convite vai por ENTRADA PADRAO, nunca por argumento: argumento aparece na lista de processos
 # para qualquer usuario da maquina. A chave privada nunca sai do provisionador a nao ser dentro
 # do arquivo -- nem para stdout, nem para stderr.
+# Monta o provisionador num diretorio temporario, com os caminhos relativos preservados --
+# senao os imports de `../streamFix/` nao resolvem. Imprime o diretorio.
+stage_provisioner() {
+    local dir arquivo destino
+    dir="$(mktemp -d)"
+    for arquivo in "${PROVISIONING_FILES[@]}"; do
+        destino="$dir/$arquivo"
+        mkdir -p "$(dirname "$destino")"
+        repo_file "$arquivo" > "$destino"
+    done
+    printf '%s\n' "$dir"
+}
+
 macos_provision_tunnel() {
     local convite="$1" url="$2" chave="$3"
-    local tmp arquivo
+    local tmp arquivo prov
     tmp="$(mktemp -d)"
     # O nome do perfil sai do nome do ARQUIVO, no wg-quick como no WireSock.
     arquivo="$tmp/$TUNNEL_PROFILE.conf"
@@ -1341,12 +1370,17 @@ macos_provision_tunnel() {
     local args=(--url "$url" --arquivo "$arquivo" --plataforma darwin)
     [ -n "$chave" ] && args+=(--chave-da-saida "$chave")
 
+    # O provisionador e montado ANTES de o convite ser usado: se faltar um modulo, a falha
+    # acontece aqui, com o convite ainda intacto, e nao depois de gasta-lo.
+    prov="$(stage_provisioner)"
+
     step 'Trocando o convite por um endereco na saida' >&2
-    if ! printf '%s' "$convite" | node "$SCRIPT_DIR/provisiona.mjs" "${args[@]}" > "$tmp/resposta.json"; then
+    if ! printf '%s' "$convite" | node "$prov/installer/provisiona.mjs" "${args[@]}" > "$tmp/resposta.json"; then
         # O provisionador ja explicou o motivo em stderr, que a pessoa acabou de ver.
-        rm -rf "$tmp"
+        rm -rf "$tmp" "$prov"
         fail 'Nao consegui montar o tunel. Confira o convite e o endereco da saida.'
     fi
+    rm -rf "$prov"
 
     printf '%s\n' "$tmp"
 }
