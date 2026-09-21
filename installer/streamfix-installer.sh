@@ -72,7 +72,7 @@ esac
 
 # URL de release do instalador do Equicord/Vencord (Equilotl), a mesma que o wrapper de
 # injecao (Equicord/scripts/runInstaller.mjs, BASE_URL) ja usa hoje para baixar o build GUI no
-# macOS. So o nome do asset muda: aqui pegamos o EquilotlCli-darwin-<arch>, que le linha de
+# macOS. So o nome do asset muda: aqui pegamos o EquilotlCli-<arch>, que le linha de
 # comando, em vez do Equilotl-darwin-<arch>.zip, que so abre janela.
 MACOS_EQUILOTL_BASE_URL="https://github.com/Equicord/Equilotl/releases/latest/download"
 
@@ -801,18 +801,33 @@ run_inject_root() {
     return "$rc"
 }
 
-# arm64 e x64 sao os dois sufixos de asset que o Equilotl publica (EquilotlCli-darwin-arm64 e
-# EquilotlCli-darwin-x64, ver scripts/runInstaller.mjs do Equicord). O mapeamento de verdade
-# ja aconteceu ao definir MACOS_ARCH; aqui so falha numa CPU que nao mapeamos.
-macos_cli_arch() {
-    [ -n "$MACOS_ARCH" ] || return 1
-    printf '%s\n' "$MACOS_ARCH"
+# **O asset NAO tem "darwin" no nome.** Medido em 21/09, depois de a injecao falhar num Mac: o
+# workflow de release do Equilotl compila `EquilotlCli-darwin` e publica renomeado --
+#
+#     mv build/EquilotlCli-darwin build/EquilotlCli-x64
+#     mv build/EquilotlCli-darwin build/EquilotlCli-arm64
+#     mv build/EquilotlCli-darwin build/EquilotlCli-universal
+#
+# -- entao os nomes publicados sao EquilotlCli-arm64, EquilotlCli-x64 e EquilotlCli-universal.
+# Quem leva sufixo de sistema e o Linux (-linux) e o Windows (.exe); o macOS e o caso sem
+# sufixo. Pedir EquilotlCli-darwin-arm64 da 404, e o ADR 0001 registrou esse nome errado desde
+# o inicio.
+#
+# O 404 nao aparecia como erro: a funcao devolvia falha, o instalador caia no caminho da janela
+# e pedia um clique. O sintoma era "abriu a janela" em vez de "o download falhou", e ninguem
+# procuraria um nome de asset por causa disso.
+#
+# `universal` e a reserva: o mesmo binario com as duas arquiteturas, e serve numa CPU que nao
+# mapeamos.
+macos_cli_assets() {
+    [ -n "$MACOS_ARCH" ] && printf 'EquilotlCli-%s\n' "$MACOS_ARCH"
+    printf 'EquilotlCli-universal\n'
 }
 
 # Pasta de caches do usuario, nao a de suporte a aplicativos: o binario baixado nao e estado do
 # StreamFix, e a pasta de caches e o lugar que o proprio macOS sabe que pode limpar.
 macos_equilotl_cli_cache_path() {
-    printf '%s\n' "$HOME/Library/Caches/StreamFix/EquilotlCli-darwin-$1"
+    printf '%s\n' "$HOME/Library/Caches/StreamFix/$1"
 }
 
 # Baixa o build de linha de comando do Equilotl pela arquitetura da maquina e guarda em cache,
@@ -820,30 +835,43 @@ macos_equilotl_cli_cache_path() {
 # hoje, do mesmo publicador; sem checksum, porque o Equilotl nao emite um para nenhum binario
 # dele.
 ensure_equilotl_cli() {
-    local arch cache
-    arch="$(macos_cli_arch)" || return 1
-    cache="$(macos_equilotl_cli_cache_path "$arch")"
+    local asset cache tmp url
 
-    if [ -x "$cache" ]; then
+    # Tenta a arquitetura desta maquina e, se ela nao existir, o universal. Cada candidato tem
+    # o seu proprio cache, entao trocar de candidato nao reaproveita um download errado.
+    while IFS= read -r asset; do
+        cache="$(macos_equilotl_cli_cache_path "$asset")"
+        if [ -x "$cache" ]; then
+            printf '%s\n' "$cache"
+            return 0
+        fi
+
+        mkdir -p "$(dirname "$cache")" || return 1
+        url="$MACOS_EQUILOTL_BASE_URL/$asset"
+        tmp="$cache.tmp.$$"
+
+        if have curl; then
+            curl -fsSL -o "$tmp" "$url" || { rm -f "$tmp"; continue; }
+        elif have wget; then
+            wget -qO "$tmp" "$url" || { rm -f "$tmp"; continue; }
+        else
+            return 1
+        fi
+
+        # Um 404 servido como pagina de erro viria com corpo pequeno e sem bit de execucao util.
+        # O binario do Equilotl passa de 1 MB; qualquer coisa menor que isso nao e ele.
+        if [ "$(file_size "$tmp")" -lt 1000000 ]; then
+            rm -f "$tmp"
+            continue
+        fi
+
+        chmod +x "$tmp" || { rm -f "$tmp"; continue; }
+        mv "$tmp" "$cache" || { rm -f "$tmp"; continue; }
         printf '%s\n' "$cache"
         return 0
-    fi
+    done < <(macos_cli_assets)
 
-    mkdir -p "$(dirname "$cache")" || return 1
-    local url="$MACOS_EQUILOTL_BASE_URL/EquilotlCli-darwin-$arch"
-    local tmp="$cache.tmp.$$"
-
-    if have curl; then
-        curl -fsSL -o "$tmp" "$url" || { rm -f "$tmp"; return 1; }
-    elif have wget; then
-        wget -qO "$tmp" "$url" || { rm -f "$tmp"; return 1; }
-    else
-        return 1
-    fi
-
-    chmod +x "$tmp" || { rm -f "$tmp"; return 1; }
-    mv "$tmp" "$cache" || { rm -f "$tmp"; return 1; }
-    printf '%s\n' "$cache"
+    return 1
 }
 
 # Ponto de exec isolado do resto de macos_run_inject_cli/macos_run_uninject_cli para os testes

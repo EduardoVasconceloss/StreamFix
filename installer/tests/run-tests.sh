@@ -375,14 +375,27 @@ test_macos_settings_path() {
 # ------------------------------------------------------------------- macOS: injecao via CLI
 
 test_macos_cli_arch() {
-    printf '\n== injecao (Darwin): sufixo de asset por arquitetura ==\n'
+    printf '\n== injecao (Darwin): o nome do asset do Equilotl ==\n'
     fixture_setup Darwin
 
+    # O asset NAO tem "darwin" no nome: o workflow do Equilotl compila EquilotlCli-darwin e
+    # publica renomeado para EquilotlCli-<arch>. Pedir com "darwin" da 404 -- foi o que fez a
+    # injecao cair na janela num Mac, em 21/09, sem dizer por que.
     MACOS_ARCH="arm64"
-    assert_eq "Apple Silicon usa o sufixo arm64" "arm64" "$(macos_cli_arch)"
+    assert_eq "Apple Silicon pede EquilotlCli-arm64" \
+        "EquilotlCli-arm64 EquilotlCli-universal" "$(macos_cli_assets | tr '\n' ' ' | sed 's/ $//')"
 
     MACOS_ARCH="x64"
-    assert_eq "Intel usa o sufixo x64" "x64" "$(macos_cli_arch)"
+    assert_eq "Intel pede EquilotlCli-x64" \
+        "EquilotlCli-x64 EquilotlCli-universal" "$(macos_cli_assets | tr '\n' ' ' | sed 's/ $//')"
+
+    # Numa CPU que nao mapeamos sobra o universal, que e o mesmo binario com as duas.
+    MACOS_ARCH=""
+    assert_eq "CPU nao mapeada cai no universal" \
+        "EquilotlCli-universal" "$(macos_cli_assets | tr '\n' ' ' | sed 's/ $//')"
+
+    MACOS_ARCH="arm64"
+    assert_eq "nenhum candidato leva darwin no nome" "" "$(macos_cli_assets | grep darwin || true)"
 
     MACOS_ARCH=""
     fixture_teardown
@@ -393,8 +406,8 @@ test_macos_cli_cache_path() {
     fixture_setup Darwin
 
     assert_eq "cache fica na pasta de caches do usuario, nao na de suporte a aplicativos" \
-        "$HOME/Library/Caches/StreamFix/EquilotlCli-darwin-arm64" \
-        "$(macos_equilotl_cli_cache_path "arm64")"
+        "$HOME/Library/Caches/StreamFix/EquilotlCli-arm64" \
+        "$(macos_equilotl_cli_cache_path "EquilotlCli-arm64")"
 
     fixture_teardown
 }
@@ -404,7 +417,7 @@ test_macos_cli_reaproveita_cache() {
     fixture_setup Darwin
     MACOS_ARCH="arm64"
 
-    local cache="$HOME/Library/Caches/StreamFix/EquilotlCli-darwin-arm64"
+    local cache="$HOME/Library/Caches/StreamFix/EquilotlCli-arm64"
     mkdir -p "$(dirname "$cache")"
     printf '#!/bin/sh\n' > "$cache"
     chmod +x "$cache"
@@ -436,7 +449,7 @@ test_macos_cli_contrato_de_variaveis() {
 
     local checkout="$HOME/Equicord"
     make_checkout "$checkout" "equicord"
-    local cache="$HOME/Library/Caches/StreamFix/EquilotlCli-darwin-arm64"
+    local cache="$HOME/Library/Caches/StreamFix/EquilotlCli-arm64"
     mkdir -p "$(dirname "$cache")"
     printf '#!/bin/sh\n' > "$cache"
     chmod +x "$cache"
@@ -612,7 +625,7 @@ test_macos_uninject_cli_contrato_de_variaveis() {
 
     local checkout="$HOME/Equicord"
     make_checkout "$checkout" "equicord"
-    local cache="$HOME/Library/Caches/StreamFix/EquilotlCli-darwin-arm64"
+    local cache="$HOME/Library/Caches/StreamFix/EquilotlCli-arm64"
     mkdir -p "$(dirname "$cache")"
     printf '#!/bin/sh\n' > "$cache"
     chmod +x "$cache"
@@ -640,7 +653,7 @@ test_macos_run_inject_cli_ainda_manda_install() {
 
     local checkout="$HOME/Equicord"
     make_checkout "$checkout" "equicord"
-    local cache="$HOME/Library/Caches/StreamFix/EquilotlCli-darwin-arm64"
+    local cache="$HOME/Library/Caches/StreamFix/EquilotlCli-arm64"
     mkdir -p "$(dirname "$cache")"
     printf '#!/bin/sh\n' > "$cache"
     chmod +x "$cache"
