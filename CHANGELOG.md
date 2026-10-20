@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.4.5](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.4.4...v2.4.5) (2026-10-20)
+
+
+### Bug Fixes
+
+* acompanhar a nova API de Toasts do Vencord/Equicord ([fffba48](https://github.com/EduardoVasconceloss/StreamFix/commit/fffba48b9b955d9ef82ac09381edc47322e8cc0c))
+* acompanhar a nova API de Toasts do Vencord/Equicord ([08a04da](https://github.com/EduardoVasconceloss/StreamFix/commit/08a04daacaf55370a46003fbed4811bbbf0e15c6))
+* Build-Mod atualiza o checkout antes de compilar ([755374e](https://github.com/EduardoVasconceloss/StreamFix/commit/755374e860e9a097c7250ff1418f31c1d497efb1))
+* Build-Mod reinstala quando node_modules diverge do lockfile ([d6c4ff3](https://github.com/EduardoVasconceloss/StreamFix/commit/d6c4ff3cf49645810c8902f387f04fbce5905400))
+
 ## [2.4.4](https://github.com/EduardoVasconceloss/StreamFix/compare/v2.4.3...v2.4.4) (2026-09-21)
 
 
