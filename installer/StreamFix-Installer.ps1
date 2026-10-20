@@ -654,6 +654,18 @@ function Copy-Plugin($root) {
 function Build-Mod($root) {
     Push-Location -LiteralPath $root
     try {
+        # Checkout reaproveitado (Install-Mod/Find-Checkout) nunca e atualizado sozinho. Parado
+        # tempo demais, webpack/common muda e o plugin (que segue o upstream atual) nao compila
+        # mais contra ele -- so --depth 1, entao busca so o topo atual, sem historico.
+        Write-Step 'Atualizando o checkout'
+        Invoke-Native { git fetch --depth 1 origin }
+        if ($LASTEXITCODE -eq 0) {
+            Invoke-Native { git reset --hard 'origin/HEAD' }
+            if ($LASTEXITCODE -ne 0) { Write-Warn 'Nao consegui atualizar o checkout. Seguindo com o que ja esta na pasta.' }
+        } else {
+            Write-Warn 'Sem rede para atualizar o checkout. Seguindo com o que ja esta na pasta.'
+        }
+
         # So pula o install quando node_modules bate com o lockfile: um checkout antigo
         # reaproveitado (Select-Target) pode ter as duas coisas dessincronizadas.
         Invoke-Native { pnpm install --frozen-lockfile --prefer-offline }
