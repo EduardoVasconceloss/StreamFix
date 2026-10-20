@@ -654,8 +654,11 @@ function Copy-Plugin($root) {
 function Build-Mod($root) {
     Push-Location -LiteralPath $root
     try {
-        if (-not (Test-Path -LiteralPath (Join-Path $root 'node_modules'))) {
-            Write-Step 'Instalando dependencias (na primeira vez demora alguns minutos)'
+        # So pula o install quando node_modules bate com o lockfile: um checkout antigo
+        # reaproveitado (Select-Target) pode ter as duas coisas dessincronizadas.
+        Invoke-Native { pnpm install --frozen-lockfile --prefer-offline }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Step 'Dependencias fora de sincronia, reinstalando'
             Invoke-Native { pnpm install }
             if ($LASTEXITCODE -ne 0) { throw 'pnpm install falhou' }
         }
