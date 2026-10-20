@@ -12,7 +12,7 @@ import { copyWithToast } from "@utils/discord";
 import { useAwaiter } from "@utils/react";
 import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import { findStoreLazy } from "@webpack";
-import { Constants, MaskedLink, RestAPI, SearchableSelect, showToast, Toasts, UserStore } from "@webpack/common";
+import { Constants, MaskedLink, RestAPI, SearchableSelect, showToast, UserStore } from "@webpack/common";
 
 import { aAmostra, ConexaoBruta } from "./tunnel/coletor";
 import { EstadoTunel } from "./tunnel/controle";
@@ -235,7 +235,7 @@ async function executarTroca(): Promise<Aplicado> {
 
         if (alvo === "controle" && perfilNoAr === completo && !avisouVolta) {
             avisouVolta = true;
-            showToast("StreamFix nao conseguiu voltar ao tunel de controle. Tudo segue funcionando, so com a latencia mais alta.", Toasts.Type.FAILURE);
+            showToast({ text: "StreamFix nao conseguiu voltar ao tunel de controle. Tudo segue funcionando, so com a latencia mais alta.", variant: "critical" });
         }
         return { ok: false, nivel: alvo, motivo: r.motivo };
     } catch (error) {
@@ -331,7 +331,7 @@ async function processarVoz(tipo: TipoDeEventoVoz) {
         anotar(evento.localAddress == null ? "voz nasceu sem endereco legivel"
             : evento.localAddress === saida ? "voz nasceu na saida" : "voz nasceu fora da saida");
     }
-    if (acao.aviso !== null) showToast(acao.aviso, Toasts.Type.FAILURE);
+    if (acao.aviso !== null) showToast({ text: acao.aviso, variant: "critical" });
     if (acao.resgatar) await resgatarVoz();
 }
 
@@ -352,7 +352,7 @@ async function resgatarVoz() {
         // Sem conexao nenhuma, a pessoa saiu no meio: o `saiu` na fila devolve.
         if (rtc == null && aplicado.ok) return;
         anotar(`resgate da voz desistiu: ${aplicado.motivo ?? "sem reconnect()"}`);
-        showToast(AVISO_VOZ_FORA, Toasts.Type.FAILURE);
+        showToast({ text: AVISO_VOZ_FORA, variant: "critical" });
         encerrarVoz();
         return;
     }
@@ -374,7 +374,7 @@ async function conferirTransmissao() {
         const texto = conferirNascimento(local, hostDoEndpoint(settings.store.enderecoDaSaida));
         anotar(local === null ? "transmissao nasceu sem endereco legivel"
             : texto === null ? "transmissao nasceu na saida" : "transmissao nasceu fora da saida");
-        if (texto !== null && settings.store.exigirTunel) showToast(texto, Toasts.Type.FAILURE);
+        if (texto !== null && settings.store.exigirTunel) showToast({ text: texto, variant: "critical" });
     } catch {
         // So avisa. Falha aqui nao pode mexer na transmissao.
     }
@@ -425,7 +425,7 @@ async function conferirTrava() {
         if (leitura.trava) {
             anotar(`a trava veio (variante ${leitura.servidor}), ${noGateway ? "com o tunel no ar" : "antes de o tunel ficar pronto"}`);
         }
-        if (d.aviso !== null) showToast(d.aviso, Toasts.Type.FAILURE);
+        if (d.aviso !== null) showToast({ text: d.aviso, variant: "critical" });
         if (d.forcarCompleto) travaComControle = true;
         if (!d.recarregar) {
             if (d.forcarCompleto) void aplicarNivel();
@@ -600,7 +600,7 @@ function forceRegion() {
     if (typeof store.getPreferredRegion !== "function"
         || typeof store.getPreferredRegions !== "function"
         || typeof store.shouldIncludePreferredRegion !== "function") {
-        showToast("StreamFix could not find Discord's region picker, so your call region is untouched.", Toasts.Type.FAILURE);
+        showToast({ text: "StreamFix could not find Discord's region picker, so your call region is untouched.", variant: "critical" });
         return;
     }
 
@@ -704,7 +704,7 @@ function comecarAObservar() {
             // meio segundo seria ruido, e ruido a pessoa aprende a ignorar.
             if (texto === null || texto === ultimo) { ultimo = texto; return; }
             ultimo = texto;
-            showToast(texto, Toasts.Type.FAILURE);
+            showToast({ text: texto, variant: "critical" });
         }
     );
 }
@@ -902,7 +902,7 @@ export default definePlugin({
         } catch (error) {
             // Nao bloqueia por falha propria. A transmissao pode morrer, e ai o monitor avisa --
             // bem melhor do que ninguem conseguir transmitir porque o plugin quebrou.
-            showToast(`StreamFix nao conseguiu conferir o tunel: ${error instanceof Error ? error.message : String(error)}`, Toasts.Type.FAILURE);
+            showToast({ text: `StreamFix nao conseguiu conferir o tunel: ${error instanceof Error ? error.message : String(error)}`, variant: "critical" });
             return { ok: true };
         }
     },
@@ -928,7 +928,7 @@ export default definePlugin({
             });
 
             if (decisao.aviso !== null) {
-                showToast(decisao.aviso, decisao.prepararTunel ? Toasts.Type.MESSAGE : Toasts.Type.FAILURE);
+                showToast({ text: decisao.aviso, variant: decisao.prepararTunel ? "default" : "critical" });
             }
 
             if (decisao.entrar) {
@@ -951,7 +951,7 @@ export default definePlugin({
             // tela fica preta -- mas isso e melhor do que o plugin quebrado travar a entrada.
             preparandoEntrada = false;
             repetindoEntrada = false;
-            showToast(`StreamFix nao conseguiu conferir o tunel: ${error instanceof Error ? error.message : String(error)}`, Toasts.Type.FAILURE);
+            showToast({ text: `StreamFix nao conseguiu conferir o tunel: ${error instanceof Error ? error.message : String(error)}`, variant: "critical" });
             return true;
         }
     },
